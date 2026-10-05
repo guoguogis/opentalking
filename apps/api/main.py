@@ -73,6 +73,9 @@ def create_app() -> FastAPI:
 
 
 def main() -> None:
+    from opentalking.core.config import load_process_env
+
+    load_process_env()
     settings = get_settings()
     host = os.environ.get("OPENTALKING_API_HOST", settings.api_host)
     port = int(os.environ.get("OPENTALKING_API_PORT", str(settings.api_port)))

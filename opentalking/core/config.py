@@ -366,6 +366,23 @@ def _load_legacy_env_source() -> dict[str, Any]:
     return {target: os.environ[name] for name, target in mapping.items() if name in os.environ}
 
 
+def load_process_env(env_file: str | None = None) -> None:
+    """Mirror ``.env`` into ``os.environ`` for code that reads the environment directly.
+
+    pydantic-settings reads ``.env`` into the ``Settings`` object, but several
+    components resolve things from ``os.environ`` instead of settings — for
+    example the Edge TTS / DashScope decoders pick their ffmpeg binary via
+    ``OPENTALKING_FFMPEG_BIN``. Without this mirror those values stay invisible
+    and the components silently fall back to whatever ``ffmpeg`` is on PATH.
+    Real environment variables always win (``override=False``).
+    """
+    try:
+        from dotenv import load_dotenv
+    except Exception:  # pragma: no cover - python-dotenv is a hard dependency
+        return
+    load_dotenv(env_file or os.environ.get("OPENTALKING_ENV_FILE", ".env"), override=False)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENTALKING_",

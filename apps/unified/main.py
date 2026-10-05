@@ -253,6 +253,9 @@ def create_app() -> FastAPI:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    from opentalking.core.config import load_process_env
+
+    load_process_env()
     parser = argparse.ArgumentParser(description="OpenTalking single-process server")
     parser.add_argument("--host", default=os.environ.get("OPENTALKING_UNIFIED_HOST", "0.0.0.0"))
     parser.add_argument(
