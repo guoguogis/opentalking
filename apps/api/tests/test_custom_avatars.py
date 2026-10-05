@@ -30,6 +30,27 @@ def _transparent_png_bytes(size: tuple[int, int] = (8, 8)) -> bytes:
     return out.getvalue()
 
 
+def _mp4_bytes(size: tuple[int, int] = (64, 80), frames: int = 5, fps: int = 5) -> bytes:
+    """Encode a tiny real MP4 clip so the dynamic-avatar path can decode it."""
+    import tempfile
+
+    import cv2
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "clip.mp4"
+        fourcc = getattr(cv2, "VideoWriter_fourcc")(*"mp4v")
+        writer = cv2.VideoWriter(str(path), fourcc, float(fps), (int(size[0]), int(size[1])))
+        assert writer.isOpened()
+        try:
+            for index in range(max(1, frames)):
+                frame = np.full((size[1], size[0], 3), 40 + index * 20, dtype=np.uint8)
+                writer.write(frame)
+        finally:
+            writer.release()
+        return path.read_bytes()
+
+
 def _path_has_suffix(path: str, *suffix: str) -> bool:
     return Path(path).parts[-len(suffix):] == suffix
 
@@ -1843,11 +1864,25 @@ def test_create_custom_avatar_accepts_uploaded_source_video(tmp_path, monkeypatc
         encoding="utf-8",
     )
 
-    async def fake_read_upload_video(upload):
-        return Image.open(BytesIO(_png_bytes((640, 900)))).convert("RGB"), b"fake-video", ".mp4"
+    from opentalking.avatar.mouth_metadata import AvatarMouthLandmarks
 
-    monkeypatch.setattr(avatars, "_read_upload_video", fake_read_upload_video)
-    monkeypatch.setattr(avatars.mouth_metadata, "detect_mouth_landmarks", lambda frame: None)
+    def fake_detect(frame):
+        height, width = frame.shape[:2]
+        return AvatarMouthLandmarks(
+            mouth_center=(width // 2, height // 2),
+            mouth_rx=max(1, width // 8),
+            mouth_ry=max(1, height // 8),
+            outer_lip=(
+                (width // 4, height // 2),
+                (width // 2, height // 3),
+                (width * 3 // 4, height // 2),
+                (width // 2, height * 2 // 3),
+            ),
+        )
+
+    monkeypatch.setattr(avatars.mouth_metadata, "detect_mouth_landmarks", fake_detect)
+
+    video_bytes = _mp4_bytes((64, 80), frames=5)
 
     app = FastAPI()
     app.state.settings = SimpleNamespace(avatars_dir=str(tmp_path))
@@ -1856,25 +1891,37 @@ def test_create_custom_avatar_accepts_uploaded_source_video(tmp_path, monkeypatc
 
     response = client.post(
         "/avatars/custom",
-        data={"base_avatar_id": "base-quicktalk", "name": "视频源形象", "model": "quicktalk"},
-        files={"video": ("source.mp4", b"fake-video", "video/mp4")},
+        data={"base_avatar_id": "base-quicktalk", "name": "动态形象", "model": "quicktalk"},
+        files={"video": ("source.mp4", video_bytes, "video/mp4")},
     )
 
     assert response.status_code == 200
     created = response.json()
+    assert created["model_type"] == "wav2lip"
     assert created["has_preview_video"] is True
     custom_dir = tmp_path / created["id"]
     manifest = json.loads((custom_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["metadata"]["reference_mode"] == "video"
-    assert manifest["metadata"]["idle_mode"] == "loop"
-    assert manifest["metadata"]["source_video"] == "source/source_video.mp4"
-    assert manifest["metadata"]["source_image"] == "source/source.png"
-    assert (custom_dir / "source" / "source_video.mp4").read_bytes() == b"fake-video"
-    assert Image.open(custom_dir / "preview.png").size == (640, 900)
+    metadata = manifest["metadata"]
+    assert manifest["model_type"] == "wav2lip"
+    assert metadata["reference_mode"] == "frames"
+    assert metadata["idle_mode"] == "loop"
+    assert metadata["preprocessed"] is True
+    assert metadata["frame_dir"] == "frames"
+    assert metadata["frame_metadata"] == "frames/mouth_metadata.json"
+    assert metadata["source_video"] == "source/source_video.mp4"
+    assert metadata["mouth_polygon_source"] == "mediapipe"
+    assert "source_image" not in metadata
+    assert (custom_dir / "source" / "source_video.mp4").read_bytes() == video_bytes
+    frame_files = sorted((custom_dir / "frames").glob("frame_*.jpg"))
+    assert len(frame_files) >= 2
+    assert metadata["extracted_frame_count"] == len(frame_files)
+    assert (custom_dir / "frames" / "mouth_metadata.json").is_file()
+    assert Image.open(custom_dir / "preview.png").size == (64, 80)
+    assert Image.open(custom_dir / "reference.png").size == (64, 80)
     preview_video = client.get(f"/avatars/{created['id']}/preview-video")
     assert preview_video.status_code == 200
     assert preview_video.headers["content-type"] == "video/mp4"
-    assert preview_video.content == b"fake-video"
+    assert preview_video.content == video_bytes
 
 
 def test_create_custom_avatar_resizes_large_upload_to_realtime_max(tmp_path, monkeypatch):

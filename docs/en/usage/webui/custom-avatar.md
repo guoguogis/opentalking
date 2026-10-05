@@ -51,7 +51,7 @@ Video assets are useful when natural posture and background motion matter. Recom
 - Stable frame rate.
 - Short clips for initial validation.
 
-Video assets are currently best prepared with scripts and placed under the avatar directory.
+Video assets can be uploaded in the WebUI (choose "Dynamic avatar"), or prepared with scripts and placed under the avatar directory.
 
 ## Create Avatar from Image
 
@@ -60,9 +60,10 @@ Video assets are currently best prepared with scripts and placed under the avata
 1. Open WebUI.
 2. Go to the avatar library.
 3. Click the local upload entry.
-4. Choose a base avatar.
-5. Enter a new avatar name and upload an image.
-6. Select the new avatar after processing completes.
+4. Pick "Static avatar (image)" under "Avatar type".
+5. Choose a base avatar.
+6. Enter a new avatar name and upload an image.
+7. Select the new avatar after processing completes.
 
 <div class="ot-figure-placeholder">
   <strong>Screenshot placeholder: upload custom avatar</strong>
@@ -86,6 +87,18 @@ uv run python scripts/prepare_wav2lip_image_asset.py \
 Restart services after generation so WebUI reloads the avatar directory.
 
 ## Create Avatar from Video
+
+A dynamic avatar is built from a video frame sequence (Wav2Lip frames mode).
+
+### Upload in WebUI
+
+1. Open WebUI and go to the avatar library.
+2. Click the local upload entry.
+3. Pick "Dynamic avatar (video)" under "Avatar type".
+4. Choose a base avatar, enter a name, and upload a video.
+5. The server extracts frames (up to 125 by default) and generates mouth metadata, then select the new avatar after processing completes.
+
+### Prepare a Wav2Lip Video Asset
 
 Prepare a Wav2Lip video avatar:
 

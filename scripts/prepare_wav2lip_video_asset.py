@@ -2,49 +2,10 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import shutil
 from pathlib import Path
-from typing import Any
 
-import cv2
-from PIL import Image
-
-from opentalking.avatar.mouth_metadata import (
-    _animation_from_landmarks,
-    _normalized_face_box,
-    detect_mouth_landmarks,
-    image_file_sha256,
-)
-from apps.cli.prepare_cache import _normalized_model_crop_from_coords
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _write_frame_metadata(frame_path: Path, frame_bgr, detector: Any | None = None) -> dict[str, Any] | None:
-    landmarks = detect_mouth_landmarks(frame_bgr)
-    if landmarks is None:
-        return None
-    height, width = frame_bgr.shape[:2]
-    face_box = _normalized_face_box(landmarks, width=width, height=height)
-    metadata = {
-        "mouth_polygon_source": "mediapipe",
-        "source_frame_hash": _sha256(frame_path),
-        "face_box": face_box,
-        "animation": _animation_from_landmarks(landmarks, width=width, height=height),
-    }
-    if detector is not None:
-        coords = detector._detect_face_box(frame_bgr)
-        metadata["model_crop"] = _normalized_model_crop_from_coords(coords, width=width, height=height)
-        metadata["model_crop_source"] = "wav2lip_detector"
-    return metadata
+from opentalking.avatar.wav2lip_video_asset import build_wav2lip_video_asset
 
 
 def prepare_asset(
@@ -61,109 +22,51 @@ def prepare_asset(
     wav2lip_face_det_device: str | None = None,
     skip_model_crop: bool = False,
 ) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    frames_dir = out_dir / "frames"
-    source_dir = out_dir / "source"
-    if frames_dir.exists():
-        shutil.rmtree(frames_dir)
-    frames_dir.mkdir(parents=True)
-    source_dir.mkdir(parents=True, exist_ok=True)
-    copied_source = source_dir / source_video.name
-    if source_video.resolve() != copied_source.resolve():
-        shutil.copy2(source_video, copied_source)
-
-    cap = cv2.VideoCapture(str(source_video))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open source video: {source_video}")
-    source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-    effective_fps = int(fps or round(source_fps) or 25)
-    source_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-
-    frames: dict[str, Any] = {}
-    missing_frames: list[str] = []
-    first_frame_path: Path | None = None
-    detector = None
-    if not skip_model_crop:
-        from opentalking.models.wav2lip.runtime import Wav2LipRealtimeRuntime
-        import os
-
-        if wav2lip_face_det_device:
-            os.environ["OPENTALKING_WAV2LIP_FACE_DET_DEVICE"] = wav2lip_face_det_device
-        detector = Wav2LipRealtimeRuntime(
-            models_dir=(wav2lip_model_root.expanduser().resolve() if wav2lip_model_root else None),
-            device="cpu",
-        )
-    index = 0
-    while index < max_frames:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if target_width and target_height:
-            frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
-        frame_name = f"frame_{index:05d}.jpg"
-        frame_path = frames_dir / frame_name
-        cv2.imwrite(str(frame_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-        if first_frame_path is None:
-            first_frame_path = frame_path
-        metadata = _write_frame_metadata(frame_path, frame, detector)
-        if metadata is None:
-            missing_frames.append(frame_name)
-        else:
-            frames[frame_name] = metadata
-        index += 1
-    cap.release()
-    if first_frame_path is None:
-        raise RuntimeError(f"No frames extracted from source video: {source_video}")
-
-    reference = out_dir / "reference.png"
-    preview = out_dir / "preview.png"
-    first_img = Image.open(first_frame_path).convert("RGB")
-    first_img.save(reference, format="PNG")
-    first_img.save(preview, format="PNG")
-    width, height = first_img.size
-
-    (frames_dir / "mouth_metadata.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "frames": frames,
-                "missing_frames": missing_frames,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    out_dir = Path(out_dir)
+    asset = build_wav2lip_video_asset(
+        source_video=source_video,
+        out_dir=out_dir,
+        max_frames=max_frames,
+        target_width=target_width,
+        target_height=target_height,
+        fps=fps,
+        skip_model_crop=skip_model_crop,
+        wav2lip_model_root=wav2lip_model_root,
+        wav2lip_face_det_device=wav2lip_face_det_device,
     )
+    metadata: dict[str, object] = {
+        "description": "Preprocessed built-in Wav2Lip video avatar asset.",
+        "reference_mode": "frames",
+        "frame_dir": asset.frame_dir_rel,
+        "frame_metadata": asset.frame_metadata_rel,
+        "preprocessed": True,
+        "preprocess_version": 1,
+        "source_video": asset.source_video_rel,
+        "source_fps": asset.source_fps,
+        "source_frame_count": asset.source_frame_count,
+        "extracted_frame_count": asset.extracted_frame_count,
+        "source_image_path": asset.reference_image_rel,
+        "source_image_hash": asset.source_image_hash,
+    }
+    for key in ("mouth_polygon_source", "face_box", "animation"):
+        value = getattr(asset, key)
+        if value is not None:
+            metadata[key] = value
     manifest = {
         "id": avatar_id,
         "name": name,
         "model_type": "wav2lip",
-        "fps": effective_fps,
+        "fps": asset.fps,
         "sample_rate": 16000,
-        "width": width,
-        "height": height,
+        "width": asset.width,
+        "height": asset.height,
         "version": "1.0",
-        "metadata": {
-            "description": "Preprocessed built-in Wav2Lip video avatar asset.",
-            "reference_mode": "frames",
-            "frame_dir": "frames",
-            "frame_metadata": "frames/mouth_metadata.json",
-            "preprocessed": True,
-            "preprocess_version": 1,
-            "source_video": str(copied_source.relative_to(out_dir)),
-            "source_fps": source_fps,
-            "source_frame_count": source_frame_count,
-            "extracted_frame_count": index,
-            "source_image_path": "reference.png",
-            "source_image_hash": image_file_sha256(reference),
-        },
+        "metadata": metadata,
     }
-    if frames:
-        first_meta = next(iter(frames.values()))
-        for key in ("mouth_polygon_source", "face_box", "animation"):
-            manifest["metadata"][key] = first_meta.get(key)
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> None:

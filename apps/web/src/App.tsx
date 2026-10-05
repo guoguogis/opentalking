@@ -1047,6 +1047,15 @@ export default function App() {
   const selectedModelStatus = modelStatuses.find((item) => item.id === model);
   const selectedModelBadge = modelConnectionBadge(selectedModelStatus, models.includes(model));
   const selectedModelConnected = selectedModelBadge.connected;
+  // `models` lists every registered provider regardless of connectivity; feature
+  // gates that need a live backend must use this connected subset instead.
+  const connectedModelIds = useMemo(
+    () =>
+      modelStatuses
+        .filter((status) => modelConnectionBadge(status, models.includes(status.id)).connected)
+        .map((status) => status.id),
+    [modelStatuses, models],
+  );
   const [asrProvider, setAsrProvider] = useState(() => {
     try {
       const saved = window.localStorage.getItem(ASR_PROVIDER_STORAGE_KEY);
@@ -2384,7 +2393,7 @@ export default function App() {
   const handleCreateCustomAvatar = useCallback(async (
     file: File,
     name: string,
-    options?: { removeBackground?: boolean },
+    options?: { removeBackground?: boolean; kind?: "static" | "dynamic" },
   ) => {
     const trimmedName = name.trim();
     if (!trimmedName) {
@@ -2397,13 +2406,14 @@ export default function App() {
       /* ignore */
     }
     setReferenceSaving(true);
+    const kind = options?.kind ?? "static";
     try {
       const fd = new FormData();
       fd.set("base_avatar_id", avatarId);
       fd.set("name", trimmedName);
       fd.set("model", model);
-      fd.set("image", file);
-      fd.set("remove_background", options?.removeBackground ? "true" : "false");
+      fd.set(kind === "dynamic" ? "video" : "image", file);
+      fd.set("remove_background", options?.removeBackground && kind === "static" ? "true" : "false");
       const created = await apiPostForm<AvatarSummary>("/avatars/custom", fd);
       setAvatars((prev) => {
         const filtered = prev.filter((avatar) => avatar.id !== created.id);
@@ -2983,6 +2993,7 @@ export default function App() {
             sceneCompositions={sceneCompositions}
             selectedSceneIdsByAvatar={selectedSceneIdsByAvatar}
             models={models}
+            connectedModels={connectedModelIds}
             onAvatarChange={handleAvatarChange}
             onAvatarUploaded={handleVideoCloneAvatarUploaded}
             onVoiceCloned={applyClonedVoice}

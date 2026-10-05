@@ -28,7 +28,7 @@ type AvatarSelectionStageProps = {
   onCustomAvatarCreate: (
     file: File,
     name: string,
-    options?: { removeBackground?: boolean },
+    options?: { removeBackground?: boolean; kind?: "static" | "dynamic" },
   ) => Promise<AvatarSummary | null | void>;
   onAvatarDelete?: (avatar: AvatarSummary) => void;
   referenceSaving?: boolean;
@@ -99,6 +99,7 @@ export function AvatarSelectionStage({
   });
   const [customFile, setCustomFile] = useState<File | null>(null);
   const [customPreviewUrl, setCustomPreviewUrl] = useState<string | null>(null);
+  const [customKind, setCustomKind] = useState<"static" | "dynamic">("static");
   const [customRemoveBackground, setCustomRemoveBackground] = useState(false);
   const [customUploadState, setCustomUploadState] = useState<"idle" | "processing" | "complete">("idle");
   const [createdCustomAvatar, setCreatedCustomAvatar] = useState<AvatarSummary | null>(null);
@@ -128,6 +129,17 @@ export function AvatarSelectionStage({
     setCustomPreviewUrl(file ? URL.createObjectURL(file) : null);
   };
 
+  const handleCustomKindChange = (kind: "static" | "dynamic") => {
+    if (kind === customKind) return;
+    setCustomKind(kind);
+    setCustomFile(null);
+    if (customPreviewUrl) URL.revokeObjectURL(customPreviewUrl);
+    setCustomPreviewUrl(null);
+    setCreatedCustomAvatar(null);
+    setCustomUploadState("idle");
+    if (kind === "dynamic") setCustomRemoveBackground(false);
+  };
+
   const closeCustomUpload = () => {
     if (referenceSaving || customUploadState === "processing") return;
     setCustomUploadOpen(false);
@@ -143,12 +155,16 @@ export function AvatarSelectionStage({
     } catch {
       /* ignore */
     }
+    const removeBackground = customKind === "static" && customRemoveBackground;
     setCreatedCustomAvatar(null);
-    setCustomUploadState(customRemoveBackground ? "processing" : "idle");
-    const created = await onCustomAvatarCreate(customFile, name, { removeBackground: customRemoveBackground });
+    setCustomUploadState(removeBackground ? "processing" : "idle");
+    const created = await onCustomAvatarCreate(customFile, name, {
+      removeBackground,
+      kind: customKind,
+    });
     if (created) {
       setCreatedCustomAvatar(created);
-      if (customRemoveBackground) {
+      if (removeBackground) {
         setCustomUploadState("complete");
       } else {
         setCustomUploadOpen(false);
@@ -202,7 +218,7 @@ export function AvatarSelectionStage({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept={customKind === "dynamic" ? "video/*" : "image/*"}
                 className="hidden"
                 tabIndex={-1}
                 aria-hidden
@@ -410,9 +426,38 @@ export function AvatarSelectionStage({
           <div className="w-full max-w-md overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl shadow-slate-900/20">
             <div className="border-b border-slate-100 px-4 py-3">
               <p className="text-sm font-semibold text-cyan-700">自定义形象</p>
-              <h3 className="mt-1 text-xl font-semibold text-slate-950">上传参考图</h3>
+              <h3 className="mt-1 text-xl font-semibold text-slate-950">
+                {customKind === "dynamic" ? "上传参考视频" : "上传参考图"}
+              </h3>
             </div>
             <div className="space-y-4 p-4">
+              <div>
+                <span className="mb-1.5 block text-xs font-medium text-slate-500">形象类型</span>
+                <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1">
+                  <button
+                    type="button"
+                    onClick={() => handleCustomKindChange("static")}
+                    disabled={referenceSaving}
+                    className={`rounded-md px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed ${
+                      customKind === "static" ? "bg-white text-cyan-700 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                    }`}
+                  >
+                    静态数字人
+                    <span className="ml-1 text-xs font-normal text-slate-400">图片</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCustomKindChange("dynamic")}
+                    disabled={referenceSaving}
+                    className={`rounded-md px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed ${
+                      customKind === "dynamic" ? "bg-white text-cyan-700 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                    }`}
+                  >
+                    动态数字人
+                    <span className="ml-1 text-xs font-normal text-slate-400">视频</span>
+                  </button>
+                </div>
+              </div>
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-500">形象名称</span>
                 <input
@@ -430,29 +475,41 @@ export function AvatarSelectionStage({
                 className="flex w-full items-center gap-3 rounded-lg border border-dashed border-cyan-300 bg-cyan-50 p-3 text-left transition hover:bg-cyan-100"
               >
                 <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white text-2xl font-light text-cyan-700">
-                  {customPreviewUrl ? (
+                  {customPreviewUrl && customKind === "dynamic" ? (
+                    <video src={customPreviewUrl} className="h-full w-full object-cover" muted loop autoPlay playsInline />
+                  ) : customPreviewUrl ? (
                     <img src={customPreviewUrl} alt="" className="h-full w-full object-cover" />
                   ) : (
                     "+"
                   )}
                 </span>
                 <span className="min-w-0">
-                  <span className="block text-sm font-semibold text-slate-950">
-                    {customFile ? customFile.name : "选择本地图片"}
+                  <span className="block truncate text-sm font-semibold text-slate-950">
+                    {customFile
+                      ? customFile.name
+                      : customKind === "dynamic"
+                        ? "选择本地视频"
+                        : "选择本地图片"}
                   </span>
-                  <span className="mt-0.5 block text-xs text-slate-500">会作为新资产加入形象库</span>
+                  <span className="mt-0.5 block text-xs text-slate-500">
+                    {customKind === "dynamic"
+                      ? "从视频抽帧生成逐帧驱动形象（Wav2Lip）"
+                      : "会作为新资产加入形象库"}
+                  </span>
                 </span>
               </button>
-              <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
-                <input
-                  type="checkbox"
-                  checked={customRemoveBackground}
-                  onChange={(event) => setCustomRemoveBackground(event.target.checked)}
-                  disabled={referenceSaving}
-                  className="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500"
-                />
-                <span className="text-sm font-medium text-slate-700">上传时抠除背景</span>
-              </label>
+              {customKind === "static" ? (
+                <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={customRemoveBackground}
+                    onChange={(event) => setCustomRemoveBackground(event.target.checked)}
+                    disabled={referenceSaving}
+                    className="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500"
+                  />
+                  <span className="text-sm font-medium text-slate-700">上传时抠除背景</span>
+                </label>
+              ) : null}
               {customUploadState === "processing" ? (
                 <div className="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2.5">
                   <div className="flex items-center justify-between gap-3">

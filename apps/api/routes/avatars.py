@@ -349,6 +349,78 @@ def _custom_avatar_max_size() -> tuple[int, int]:
     return max(1, width), max(1, height)
 
 
+def _custom_avatar_max_frames() -> int:
+    try:
+        return max(1, int(os.environ.get("OPENTALKING_CUSTOM_AVATAR_MAX_FRAMES", "125")))
+    except (TypeError, ValueError):
+        return 125
+
+
+def _fit_within(size: tuple[int, int], max_width: int, max_height: int) -> tuple[int, int]:
+    width, height = int(size[0]), int(size[1])
+    if width <= 0 or height <= 0:
+        return max(1, int(max_width)), max(1, int(max_height))
+    scale = min(1.0, max_width / width, max_height / height)
+    return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+
+
+def _build_dynamic_avatar_assets(
+    *,
+    target_dir: Path,
+    manifest_path: Path,
+    source_video_path: Path,
+    frame_size: tuple[int, int],
+) -> None:
+    """Turn an uploaded video into a Wav2Lip "dynamic" (frame-sequence) avatar.
+
+    Mirrors ``scripts/prepare_wav2lip_video_asset.py``: extract frames plus
+    mediapipe mouth metadata and update the manifest so Wav2Lip drives the
+    avatar from the frame sequence instead of a single still image.
+    """
+    from opentalking.avatar.wav2lip_video_asset import build_wav2lip_video_asset
+
+    max_w, max_h = _custom_avatar_max_size()
+    target_w, target_h = _fit_within(frame_size, max_w, max_h)
+    asset = build_wav2lip_video_asset(
+        source_video=source_video_path,
+        out_dir=target_dir,
+        max_frames=_custom_avatar_max_frames(),
+        target_width=target_w,
+        target_height=target_h,
+        skip_model_crop=True,
+    )
+
+    raw = _read_manifest(manifest_path)
+    metadata = dict(raw.get("metadata") or {})
+    metadata.pop("source_image", None)
+    metadata["description"] = "Custom preprocessed Wav2Lip video avatar."
+    metadata["idle_mode"] = "loop"
+    metadata["reference_mode"] = "frames"
+    metadata["preprocessed"] = True
+    metadata["preprocess_version"] = 1
+    metadata["frame_dir"] = asset.frame_dir_rel
+    metadata["frame_metadata"] = asset.frame_metadata_rel
+    metadata["source_video"] = asset.source_video_rel
+    metadata["source_fps"] = asset.source_fps
+    metadata["source_frame_count"] = asset.source_frame_count
+    metadata["extracted_frame_count"] = asset.extracted_frame_count
+    metadata["source_image_path"] = asset.reference_image_rel
+    metadata["source_image_hash"] = asset.source_image_hash
+    metadata["matting_status"] = "opaque"
+    if asset.mouth_polygon_source is not None:
+        metadata["mouth_polygon_source"] = asset.mouth_polygon_source
+    if asset.face_box is not None:
+        metadata["face_box"] = asset.face_box
+    if asset.animation is not None:
+        metadata["animation"] = asset.animation
+    raw["model_type"] = "wav2lip"
+    raw["width"] = asset.width
+    raw["height"] = asset.height
+    raw["fps"] = asset.fps
+    raw["metadata"] = metadata
+    _write_manifest(manifest_path, raw)
+
+
 def _resize_uploaded_avatar_image(image: Image.Image, *, max_width: int, max_height: int) -> Image.Image:
     if image.width <= max_width and image.height <= max_height:
         return image.copy()
@@ -1127,59 +1199,61 @@ async def create_custom_avatar(
             model=model,
             person_mode=person_mode,
         )
+        manifest_path = target_dir / "manifest.json"
         max_w, max_h = _custom_avatar_max_size()
-        fitted_image = _resize_uploaded_avatar_image(image_rgb, max_width=max_w, max_height=max_h)
         source_dir = target_dir / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
-        if remove_background and video_body is None:
-            original_image = fitted_image.copy()
-            try:
-                fitted_image, matting_provider = remove_avatar_background(
-                    fitted_image,
-                    provider_name=str(getattr(request.app.state.settings, "avatar_matting_provider", "rembg")),
-                    settings=request.app.state.settings,
-                )
-            except MattingError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            original_image.save(source_dir / "original.png", format="PNG")
-            _update_manifest_matting_source(
-                target_dir / "manifest.json",
-                provider_name=matting_provider,
-                original_source_image="source/original.png",
-            )
-        _update_manifest_dimensions(target_dir / "manifest.json", fitted_image)
-        _update_manifest_matting_status(target_dir / "manifest.json", fitted_image)
-        fitted_image.save(target_dir / "preview.png", format="PNG")
-        fitted_image.save(target_dir / "reference.png", format="PNG")
-        fitted_image.save(source_dir / "source.png", format="PNG")
         if video_body is not None:
+            # Dynamic avatar: preprocess the uploaded video into a Wav2Lip
+            # frame sequence so the avatar moves instead of staying a still.
             video_name = f"source_video{video_suffix}"
-            (source_dir / video_name).write_bytes(video_body)
-            raw = _read_manifest(target_dir / "manifest.json")
-            metadata = dict(raw.get("metadata") or {})
-            metadata["idle_mode"] = "loop"
-            metadata["reference_mode"] = "video"
-            metadata["source_image"] = "source/source.png"
-            metadata["source_video"] = f"source/{video_name}"
-            raw["metadata"] = metadata
-            _write_manifest(target_dir / "manifest.json", raw)
-        mouth_metadata.update_manifest_mouth_metadata(
-            target_dir / "manifest.json",
-            target_dir / "reference.png",
-            force=True,
-        )
-        if video_body is None:
-            _prepare_quicktalk_custom_assets(target_dir / "manifest.json", fitted_image)
-        if video_body is None and _model_type_from_manifest(target_dir / "manifest.json") == "wav2lip":
-            frames_dir = target_dir / "frames"
-            frames_dir.mkdir(parents=True, exist_ok=True)
-            frame_path = frames_dir / "frame_00000.png"
-            fitted_image.save(frame_path, format="PNG")
-            raw = _read_manifest(target_dir / "manifest.json")
-            metadata = dict(raw.get("metadata") or {})
-            metadata["frame_dir"] = "frames"
-            raw["metadata"] = metadata
-            _write_manifest(target_dir / "manifest.json", raw)
+            source_video_path = source_dir / video_name
+            source_video_path.write_bytes(video_body)
+            _build_dynamic_avatar_assets(
+                target_dir=target_dir,
+                manifest_path=manifest_path,
+                source_video_path=source_video_path,
+                frame_size=image_rgb.size,
+            )
+        else:
+            fitted_image = _resize_uploaded_avatar_image(image_rgb, max_width=max_w, max_height=max_h)
+            if remove_background:
+                original_image = fitted_image.copy()
+                try:
+                    fitted_image, matting_provider = remove_avatar_background(
+                        fitted_image,
+                        provider_name=str(getattr(request.app.state.settings, "avatar_matting_provider", "rembg")),
+                        settings=request.app.state.settings,
+                    )
+                except MattingError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                original_image.save(source_dir / "original.png", format="PNG")
+                _update_manifest_matting_source(
+                    manifest_path,
+                    provider_name=matting_provider,
+                    original_source_image="source/original.png",
+                )
+            _update_manifest_dimensions(manifest_path, fitted_image)
+            _update_manifest_matting_status(manifest_path, fitted_image)
+            fitted_image.save(target_dir / "preview.png", format="PNG")
+            fitted_image.save(target_dir / "reference.png", format="PNG")
+            fitted_image.save(source_dir / "source.png", format="PNG")
+            mouth_metadata.update_manifest_mouth_metadata(
+                manifest_path,
+                target_dir / "reference.png",
+                force=True,
+            )
+            _prepare_quicktalk_custom_assets(manifest_path, fitted_image)
+            if _model_type_from_manifest(manifest_path) == "wav2lip":
+                frames_dir = target_dir / "frames"
+                frames_dir.mkdir(parents=True, exist_ok=True)
+                frame_path = frames_dir / "frame_00000.png"
+                fitted_image.save(frame_path, format="PNG")
+                raw = _read_manifest(manifest_path)
+                metadata = dict(raw.get("metadata") or {})
+                metadata["frame_dir"] = "frames"
+                raw["metadata"] = metadata
+                _write_manifest(manifest_path, raw)
     except HTTPException:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise
