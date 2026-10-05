@@ -2219,7 +2219,7 @@ def test_reference_video_driver_pcm_matches_duration_and_is_low_energy() -> None
 
 
 @pytest.mark.asyncio
-async def test_create_reference_video_rejects_non_flashtalk(tmp_path: Path) -> None:
+async def test_create_reference_video_rejects_unsupported_model(tmp_path: Path) -> None:
     avatars = tmp_path / "avatars"
     exports = tmp_path / "exports"
     _write_avatar(avatars)
@@ -2231,13 +2231,69 @@ async def test_create_reference_video_rejects_non_flashtalk(tmp_path: Path) -> N
         )
     )
 
-    with pytest.raises(ValueError, match="reference video generation only supports flashtalk"):
+    with pytest.raises(ValueError, match="video creation only supports"):
         await service.create_reference_video(
-            model="quicktalk",
+            model="not-a-model",
             avatar_id="anchor",
             duration_sec=10,
             title="Reference take",
         )
+
+
+@pytest.mark.asyncio
+async def test_create_reference_video_accepts_non_flashtalk_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    avatars = tmp_path / "avatars"
+    exports = tmp_path / "exports"
+    _write_avatar(avatars)
+    captured: dict[str, object] = {}
+
+    async def fake_create_from_pcm(self, **kwargs: object) -> dict[str, object]:
+        del self
+        captured.update(kwargs)
+        return {
+            "job_id": "job-reference",
+            "status": "done",
+            "source": kwargs["source"],
+            "export_video": {
+                "id": "export-reference",
+                "kind": "video_creation",
+                "title": kwargs["title"],
+                "duration_sec": 10.0,
+                "size_bytes": 9,
+                "mime_type": "video/mp4",
+                "created_at": "2026-06-03T00:00:00Z",
+                "path": str(exports / "reference.mp4"),
+                "download_url": "/exports/videos/export-reference/download",
+                "session_id": None,
+                "avatar_id": kwargs["avatar_id"],
+                "model": kwargs["model"],
+            },
+        }
+
+    monkeypatch.setattr(VideoCreationService, "_create_from_pcm", fake_create_from_pcm)
+    service = VideoCreationService(
+        SimpleNamespace(
+            avatars_dir=str(avatars),
+            exports_dir=str(exports),
+            video_creation_reference_durations="10,30,60",
+            video_creation_reference_driver_audio=str(tmp_path / "missing-driver.wav"),
+            video_creation_reference_driver_level=240,
+        )
+    )
+
+    result = await service.create_reference_video(
+        model="quicktalk",
+        avatar_id="anchor",
+        duration_sec=10,
+        title="Reference take",
+    )
+
+    assert captured["model"] == "quicktalk"
+    assert captured["source"] == "reference_video"
+    assert result["source"] == "reference_video"
 
 
 @pytest.mark.asyncio

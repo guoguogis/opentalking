@@ -38,6 +38,8 @@ def test_video_creation_workspace_exposes_reference_video_mode() -> None:
     assert "DUO_DIALOG_1080P_AVATAR_IDS" not in source
     assert "\u56fe\u7247\u751f\u6210\u53c2\u8003\u89c6\u9891" in source
     assert "\u53c2\u8003\u89c6\u9891\u65f6\u957f" in source
-    assert 'setModel("flashtalk")' in source
+    # Reference video generation is no longer pinned to FlashTalk: any connected
+    # model can be chosen, so the mode must not force the model back.
+    assert 'setModel("flashtalk")' not in source
     assert 'audioSource: "reference_video"' in source
     assert "durationSec: referenceDurationSec" in source

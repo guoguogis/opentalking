@@ -68,6 +68,10 @@ type VideoCreationWorkspaceProps = {
   sceneCompositions: SceneComposition[];
   selectedSceneIdsByAvatar?: Record<string, string>;
   models: string[];
+  /** Models actually connected in the current runtime. `models` is the full
+   * registered list regardless of connectivity, so availability gates must use
+   * this instead (e.g. reference video hard-requires FlashTalk). */
+  connectedModels?: string[];
   onAvatarChange: (id: string) => void;
   onAvatarUploaded: (avatar: AvatarSummary) => void;
   onVoiceCloned: (application: VoiceCloneApplication) => void | Promise<void>;
@@ -459,6 +463,7 @@ export function VideoCreationWorkspace({
   sceneCompositions,
   selectedSceneIdsByAvatar = {},
   models,
+  connectedModels = [],
   onAvatarChange,
   onAvatarUploaded,
   onVoiceCloned,
@@ -1008,8 +1013,12 @@ export function VideoCreationWorkspace({
       onNotify?.("请先选择数字人资产。", "info");
       return;
     }
-    if (isReferenceVideoMode && !models.includes("flashtalk")) {
-      onNotify?.("当前环境没有可用 FlashTalk 模型，无法生成参考视频。", "info");
+    if (
+      isReferenceVideoMode
+      && !videoCreationState.modelLocked
+      && !connectedModels.includes(effectiveModel)
+    ) {
+      onNotify?.(`当前环境没有可用的 ${modelLabel(effectiveModel)} 模型，无法生成参考视频。`, "info");
       return;
     }
     if (!isReferenceVideoMode && audioSource === "upload" && !audioFile) {
@@ -1046,7 +1055,7 @@ export function VideoCreationWorkspace({
     try {
       if (isReferenceVideoMode) {
         const response = await createAndMaybePublish({
-          model: "flashtalk",
+          model: effectiveModel,
           avatarId: selectedAvatar.id,
           title,
           audioSource: "reference_video",
@@ -1104,7 +1113,7 @@ export function VideoCreationWorkspace({
     } finally {
       setGenerating(false);
     }
-  }, [audioFile, audioSource, compositionConfig, createAndMaybePublish, duoDialogAvailable, duoDialogGapMs, duoDialogLines, duoDialogSpeakers, edgeVoice, effectiveIndexTTSConfig, effectiveModel, fasterliveportraitConfig, hlsEndpoint, hlsToken, indexttsConfig.emotion_mode, indexttsEmotionAudioFile, isReferenceVideoMode, models, onExportCreated, onNotify, publishRtmps, qwenModel, qwenVoice, referenceDurationSec, selectedAvatar, showIndexTTSEmotionStrength, showIndexTTSControls, text, title, ttsProvider]);
+  }, [audioFile, audioSource, compositionConfig, connectedModels, createAndMaybePublish, duoDialogAvailable, duoDialogGapMs, duoDialogLines, duoDialogSpeakers, edgeVoice, effectiveIndexTTSConfig, effectiveModel, fasterliveportraitConfig, hlsEndpoint, hlsToken, indexttsConfig.emotion_mode, indexttsEmotionAudioFile, isReferenceVideoMode, models, onExportCreated, onNotify, publishRtmps, qwenModel, qwenVoice, referenceDurationSec, selectedAvatar, showIndexTTSEmotionStrength, showIndexTTSControls, text, title, ttsProvider]);
 
   return (
     <main className="flex min-h-0 flex-1 flex-col bg-slate-100 p-4">
@@ -1209,7 +1218,6 @@ export function VideoCreationWorkspace({
                 onClick={() => {
                   if (videoCreationState.referenceDisabled) return;
                   setCreationMode("reference_video");
-                  setModel("flashtalk");
                 }}
                 disabled={videoCreationState.referenceDisabled}
                 className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${creationMode === "reference_video" ? "border-cyan-300 bg-cyan-50 text-cyan-700" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"}`}
@@ -1222,7 +1230,7 @@ export function VideoCreationWorkspace({
             <div className="grid gap-4 lg:grid-cols-2">
               <label className="block text-sm font-medium text-slate-700">
                 生成模型
-                <select value={isReferenceVideoMode ? "flashtalk" : effectiveModel} onChange={(event) => setModel(event.target.value)} disabled={isReferenceVideoMode || videoCreationState.modelLocked} className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-100">
+                <select value={effectiveModel} onChange={(event) => setModel(event.target.value)} disabled={videoCreationState.modelLocked} className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-100">
                   {videoCreationModelOptions.map((item) => (
                     <option key={item} value={item} disabled={!videoCreationState.modelLocked && !models.includes(item)}>{modelLabel(item)}{videoCreationState.modelLocked || models.includes(item) ? "" : "（不可用）"}</option>
                   ))}
@@ -1394,7 +1402,7 @@ export function VideoCreationWorkspace({
                       <img src={buildApiUrl(`/avatars/${encodeURIComponent(selectedAvatar.id)}/preview`)} alt={selectedAvatar.name ?? selectedAvatar.id} className="h-16 w-16 rounded-md border border-slate-200 object-cover" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-semibold text-slate-900">{selectedAvatar.name ?? selectedAvatar.id}</span>
-                        <span className="block text-xs text-slate-500">FlashTalk 使用内部低能量驱动音频生成参考视频</span>
+                        <span className="block text-xs text-slate-500">使用内部低能量驱动音频生成参考视频</span>
                       </span>
                     </>
                   ) : (

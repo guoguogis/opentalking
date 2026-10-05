@@ -40,6 +40,25 @@ from opentalking.streaming.types import ProgramAudio, ProgramVideo
 
 log = logging.getLogger(__name__)
 
+
+def imread_unicode(path: object, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
+    """``cv2.imread`` with non-ASCII-safe path handling.
+
+    OpenCV's ``imread`` resolves the path through the platform's narrow encoding
+    and silently returns ``None`` for paths it cannot represent — on Windows that
+    includes any directory name outside the ANSI code page (e.g. Chinese avatar
+    ids). Reading the bytes ourselves and decoding via ``cv2.imdecode`` works for
+    every path.
+    """
+    try:
+        buf = np.fromfile(str(path), dtype=np.uint8)
+    except OSError:
+        return None
+    if buf.size == 0:
+        return None
+    return cv2.imdecode(buf, flags)
+
+
 REFERENCE_DRIVER_AUDIO_PATH = Path(__file__).resolve().parent / "assets" / "reference_drivers" / "flashtalk_default_driver.wav"
 
 SUPPORTED_VIDEO_CREATION_MODELS = {
@@ -279,7 +298,7 @@ def _avatar_anchor_origin(anchor: str, canvas_w: int, canvas_h: int, layer_w: in
 
 
 def _load_avatar_alpha_mask(path: object) -> np.ndarray | None:
-    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    image = imread_unicode(path, cv2.IMREAD_UNCHANGED)
     if image is None or image.ndim != 3 or image.shape[2] < 4:
         return None
     return image[:, :, 3].astype(np.float32) / 255.0
@@ -367,7 +386,7 @@ def _apply_video_composition(
     height = _coerce_composition_int(config, "output_height", int(frame_height), min_value=180, max_value=2160)
     background_path = config.get("background_path")
     if background_path:
-        background_raw = cv2.imread(str(background_path), cv2.IMREAD_COLOR)
+        background_raw = imread_unicode(background_path, cv2.IMREAD_COLOR)
         if background_raw is None:
             raise FileNotFoundError("background file not found")
         background = _resize_cover(background_raw, int(width), int(height))
@@ -425,7 +444,7 @@ class _VideoFrameComposer:
         )
         background_path = self.config.get("background_path")
         if background_path:
-            background_raw = cv2.imread(str(background_path), cv2.IMREAD_COLOR)
+            background_raw = imread_unicode(background_path, cv2.IMREAD_COLOR)
             if background_raw is None:
                 raise FileNotFoundError("background file not found")
             self._background = _resize_cover(background_raw, int(width), int(height))
@@ -1698,6 +1717,7 @@ class VideoCreationService:
                 avatar_id=avatar_id,
                 model=model_value,
                 max_bytes=_settings_int(self.settings, "export_max_bytes", 1024 * 1024 * 1024),
+                source_job_id=job_id,
             )
         except Exception:
             if chunk_sink is not None:
@@ -1731,8 +1751,6 @@ class VideoCreationService:
         chunk_sink: VideoCreationChunkSink | None = None,
     ) -> dict[str, Any]:
         model_value = _normalize_model(model)
-        if model_value != "flashtalk":
-            raise ValueError("reference video generation only supports flashtalk")
         duration = _validate_reference_duration(self.settings, duration_sec)
         sample_rate = 16000
         total_samples = duration * sample_rate
@@ -2027,6 +2045,7 @@ class VideoCreationService:
                 avatar_id=avatar_id,
                 model=model_value,
                 max_bytes=_settings_int(self.settings, "export_max_bytes", 1024 * 1024 * 1024),
+                source_job_id=job_id,
             )
         except Exception:
             if chunk_sink is not None:
