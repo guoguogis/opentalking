@@ -232,14 +232,61 @@ def validate_light2d_config(raw: object) -> dict[str, Any]:
 
 
 @contextmanager
+def _open_file_no_follow_windows(root: Path, relative: Path) -> Iterator[BinaryIO]:
+    """Windows fallback for :func:`_open_file_no_follow`.
+
+    Windows exposes neither ``O_NOFOLLOW``, ``O_DIRECTORY`` nor ``dir_fd``, so
+    the POSIX hardened open cannot run at all. Instead we reject traversal,
+    verify that no component of the path is a symlink, that the resolved target
+    stays inside ``root``, and that it is a regular file — then open it. Windows
+    keeps a handle locked while it is open, so the path cannot be swapped out
+    from under the reader.
+    """
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise Light2DContractError("invalid Light2D file path")
+    try:
+        real_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise Light2DContractError("Light2D asset not found") from exc
+
+    candidate = real_root
+    for part in relative.parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            raise Light2DContractError("Light2D asset not found")
+
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise Light2DContractError("Light2D asset not found") from exc
+    try:
+        resolved.relative_to(real_root)
+    except ValueError as exc:
+        raise Light2DContractError("Light2D asset not found") from exc
+    if not resolved.is_file():
+        raise Light2DContractError("Light2D asset is not a regular file")
+    # Only the open() call is guarded: exceptions raised inside the caller's
+    # `with` body must propagate untouched.
+    try:
+        opened = resolved.open("rb")
+    except OSError as exc:
+        raise Light2DContractError("Light2D asset not found") from exc
+    with opened:
+        yield opened
+
+
+@contextmanager
 def _open_file_no_follow(root: Path, relative: Path) -> Iterator[BinaryIO]:
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     directory = getattr(os, "O_DIRECTORY", 0)
-    if not no_follow or not directory:
-        raise Light2DContractError("secure Light2D file opening is unavailable")
     root = root.absolute()
     if not root.is_absolute() or relative.is_absolute():
         raise Light2DContractError("invalid Light2D file path")
+    if not no_follow or not directory or os.open not in os.supports_dir_fd:
+        # Windows: no O_NOFOLLOW / O_DIRECTORY / dir_fd.
+        with _open_file_no_follow_windows(root, relative) as opened:
+            yield opened
+        return
     directory_fd: int | None = None
     file_fd: int | None = None
     try:

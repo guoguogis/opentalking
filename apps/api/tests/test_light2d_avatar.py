@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,18 @@ from opentalking.avatar.light2d import (
     load_canonical_dogo_renderer,
     load_light2d_renderer,
     resolve_referenced_asset,
+)
+
+
+requires_posix_rename_semantics = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Asserts POSIX rename semantics: swapping the file that backs an already "
+        "open handle still yields the original inode. Windows refuses to replace "
+        "an open file (os.replace raises PermissionError), so the swap cannot be "
+        "performed at all — the equivalent protection comes from the OS file "
+        "lock rather than from O_NOFOLLOW."
+    ),
 )
 
 
@@ -166,6 +179,7 @@ def test_non_object_manifest_hides_renderer_instead_of_raising_500(
     assert response.status_code == 404
 
 
+@requires_posix_rename_semantics
 def test_open_referenced_asset_reads_opened_inode_after_path_replacement(tmp_path: Path) -> None:
     context = load_light2d_renderer(_make_avatar(tmp_path))
     asset_path = context.renderer_root / "layers/base.png"
@@ -181,6 +195,7 @@ def test_open_referenced_asset_reads_opened_inode_after_path_replacement(tmp_pat
     assert reopened == original
 
 
+@requires_posix_rename_semantics
 def test_client_asset_response_does_not_reopen_validated_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
