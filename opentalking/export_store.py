@@ -37,6 +37,10 @@ def _video_root(root: Path | str) -> Path:
     return _root(root) / "videos"
 
 
+def _video_creation_job_root(root: Path | str) -> Path:
+    return _root(root) / "video_creation_jobs"
+
+
 def _safe_export_id(export_id: str) -> str:
     value = str(export_id or "").strip()
     if not _SAFE_ID_RE.fullmatch(value):
@@ -78,6 +82,37 @@ def _normalize_optional_text(value: str | None) -> str | None:
     return stripped or None
 
 
+def _read_source_job_id(metadata_path: Path) -> str | None:
+    """Job id recorded when the export was published (video creation only)."""
+    try:
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("source_job_id")
+    return _normalize_optional_text(value)
+
+
+def _remove_video_creation_job_dir(root: Path | str, job_id: str | None) -> None:
+    """Delete the intermediate ``video_creation_jobs/<job_id>`` scratch dir.
+
+    ``delete_video_export`` only removes the published export; the scratch dir
+    with ``audio.wav`` / ``video_only.mp4`` / ``result.mp4`` used to leak on
+    every delete.
+    """
+    value = str(job_id or "").strip()
+    if not value or not _SAFE_ID_RE.fullmatch(value):
+        return
+    job_root = _video_creation_job_root(root).resolve()
+    job_dir = (job_root / value).resolve()
+    try:
+        job_dir.relative_to(job_root)
+    except ValueError:
+        return
+    shutil.rmtree(job_dir, ignore_errors=True)
+
+
 def _read_metadata(path: Path, root: Path) -> dict[str, Any] | None:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -108,6 +143,7 @@ def create_video_export(
     avatar_id: str | None,
     model: str | None,
     max_bytes: int,
+    source_job_id: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     data = bytes(content)
@@ -141,6 +177,7 @@ def create_video_export(
         "session_id": _normalize_optional_text(session_id),
         "avatar_id": _normalize_optional_text(avatar_id),
         "model": _normalize_optional_text(model),
+        "source_job_id": _normalize_optional_text(source_job_id),
     }
     (target_dir / "metadata.json").write_text(
         json.dumps(item, ensure_ascii=False, indent=2) + "\n",
@@ -161,6 +198,7 @@ def create_video_export_from_file(
     avatar_id: str | None,
     model: str | None,
     max_bytes: int,
+    source_job_id: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     source_path = Path(source)
@@ -194,6 +232,7 @@ def create_video_export_from_file(
             "session_id": _normalize_optional_text(session_id),
             "avatar_id": _normalize_optional_text(avatar_id),
             "model": _normalize_optional_text(model),
+            "source_job_id": _normalize_optional_text(source_job_id),
         }
         (target_dir / "metadata.json").write_text(
             json.dumps(item, ensure_ascii=False, indent=2) + "\n",
@@ -241,10 +280,13 @@ def delete_video_export(root: Path | str, export_id: str) -> bool:
     metadata_path = _metadata_path_for_export(root, export_id)
     if metadata_path is None:
         return False
+    # Read the job link before the directory disappears.
+    source_job_id = _read_source_job_id(metadata_path)
     export_dir = metadata_path.parent.resolve()
     try:
         export_dir.relative_to(_video_root(root).resolve())
     except ValueError as exc:
         raise ValueError("invalid export path") from exc
     shutil.rmtree(export_dir)
+    _remove_video_creation_job_dir(root, source_job_id)
     return True
