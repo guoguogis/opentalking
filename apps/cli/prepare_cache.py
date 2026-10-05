@@ -41,6 +41,23 @@ class PreparedAssetResult:
     detail: str = ""
 
 
+def _imread_unicode(path: object, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
+    """``cv2.imread`` with non-ASCII-safe path handling.
+
+    OpenCV resolves ``imread`` paths through the platform's narrow encoding and
+    silently returns ``None`` on Windows for paths it cannot represent, which
+    includes avatar directories with non-ASCII (e.g. Chinese) names. Reading the
+    bytes first and decoding via ``cv2.imdecode`` works for any path.
+    """
+    try:
+        buf = np.fromfile(str(path), dtype=np.uint8)
+    except OSError:
+        return None
+    if buf.size == 0:
+        return None
+    return cv2.imdecode(buf, flags)
+
+
 def _even(value: int) -> int:
     value = max(2, int(value))
     return value - (value % 2)
@@ -165,7 +182,7 @@ def _write_image_template(
     fps: float,
     max_seconds: float | None,
 ) -> int:
-    image = cv2.imread(str(source_image))
+    image = _imread_unicode(source_image)
     if image is None:
         raise RuntimeError(f"failed to read source image: {source_image}")
     frame = cv2.resize(image, (int(width), int(height)), interpolation=cv2.INTER_AREA)
@@ -349,7 +366,7 @@ def _prepare_wav2lip_model_crop_asset(
             existing += 1
             continue
         frame_path = frame_dir / frame_name
-        frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+        frame = _imread_unicode(frame_path, cv2.IMREAD_COLOR)
         if frame is None:
             missing += 1
             continue
