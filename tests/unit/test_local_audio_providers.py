@@ -1227,6 +1227,44 @@ def test_stt_factory_request_provider_override_routes_dashscope(monkeypatch):
     assert pcm_calls == [q]
 
 
+def test_dashscope_streaming_falls_back_to_full_utterance(monkeypatch):
+    from opentalking.providers.stt.dashscope import adapter
+
+    monkeypatch.setenv("OPENTALKING_STT_DASHSCOPE_API_KEY", "test-key")
+
+    class _FakeRecognition:
+        def __init__(self, **kwargs):
+            self.callback = kwargs.get("callback")
+
+        def start(self):
+            pass
+
+        def send_audio_frame(self, chunk):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(adapter, "Recognition", _FakeRecognition)
+
+    wav_paths: list[Path] = []
+
+    def fake_recognize(path):
+        wav_paths.append(Path(path))
+        return "整段识别文本", 9.0
+
+    monkeypatch.setattr(adapter, "_recognize_wav_sync", fake_recognize)
+
+    q: queue.Queue[bytes | None] = queue.Queue()
+    q.put(b"\x01\x00" * 1600)
+    q.put(None)
+
+    text, _elapsed = adapter.transcribe_pcm_chunk_queue_sync(q)
+
+    assert text == "整段识别文本"
+    assert len(wav_paths) == 1
+
+
 def test_stt_factory_reuses_local_adapter_for_same_runtime(monkeypatch):
     from opentalking.providers.stt import factory
 

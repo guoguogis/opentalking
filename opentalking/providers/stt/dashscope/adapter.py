@@ -248,6 +248,46 @@ def _recognize_wav_sync(wav_path: Path) -> tuple[str, float]:
     return text, call_ms
 
 
+def _write_pcm16_wav(
+    path: Path,
+    pcm_s16le: bytes,
+    *,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> None:
+    import wave
+
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_s16le)
+
+
+def _transcribe_pcm_fallback(pcm_s16le: bytes) -> tuple[str, float]:
+    """Retry the whole utterance with the non-streaming WAV API.
+
+    Streaming Paraformer occasionally returns nothing for a short or noisy
+    utterance. One full-buffer pass recovers most of those instead of surfacing
+    the "未能识别有效语音" error to the user.
+    """
+    if not pcm_s16le:
+        return "", 0.0
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        wav_path = Path(tmp.name)
+    try:
+        _write_pcm16_wav(wav_path, pcm_s16le)
+        return _recognize_wav_sync(wav_path)
+    except Exception:  # noqa: BLE001
+        log.exception("STT full-utterance fallback failed")
+        return "", 0.0
+    finally:
+        try:
+            wav_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def transcribe_pcm_chunk_queue_sync(chunk_queue: "queue.Queue[bytes | None]") -> tuple[str, float]:
     """PCM s16le mono 16kHz 分块流式识别。
 
@@ -278,6 +318,7 @@ def transcribe_pcm_chunk_queue_sync(chunk_queue: "queue.Queue[bytes | None]") ->
         **kwargs,
     )
     t0 = time.perf_counter()
+    buffered = bytearray()
     try:
         rc.start()
         while True:
@@ -285,6 +326,7 @@ def transcribe_pcm_chunk_queue_sync(chunk_queue: "queue.Queue[bytes | None]") ->
             if chunk is None:
                 break
             if chunk:
+                buffered.extend(chunk)
                 rc.send_audio_frame(chunk)
     finally:
         try:
@@ -298,6 +340,16 @@ def transcribe_pcm_chunk_queue_sync(chunk_queue: "queue.Queue[bytes | None]") ->
         raise RuntimeError(f"DashScope 流式 STT 错误: {collector.error_message}")
 
     text = collector.combined_text()
+    if not text.strip() and buffered:
+        fallback_text, fallback_ms = _transcribe_pcm_fallback(bytes(buffered))
+        if fallback_text.strip():
+            log.info(
+                "STT 流式识别为空，改用整段识别恢复 %d 字 (%.0f ms, pcm=%d bytes)",
+                len(fallback_text.strip()),
+                fallback_ms,
+                len(buffered),
+            )
+            text = fallback_text
     if not text.strip():
         log.warning("STT 流式识别返回空文本")
 
