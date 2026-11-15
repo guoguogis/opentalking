@@ -35,7 +35,7 @@ from apps.api.services import session_service
 from apps.api.services.worker_service import forward_webrtc_offer, forward_worker_post_empty
 from apps.api.core.config import get_settings
 from opentalking.core.queue_status import get_flashtalk_queue_status
-from opentalking.core.redis_keys import offline_bundle_job_key
+from opentalking.core.redis_keys import offline_bundle_job_key, vidu_rtc_key
 from opentalking.core.session_store import (
     apply_flashtalk_recording_start,
     apply_flashtalk_recording_stop,
@@ -90,6 +90,9 @@ _AUDIO_RENDERER_MODELS = frozenset(
 )
 _AUDIO_RENDERER_MODELS_LABEL = "flashtalk/flashhead/fasterliveportrait/quicktalk/musetalk/wav2lip"
 _FLASHTALK_SLOT_MODELS = frozenset({"flashtalk", "flashhead"})
+
+# 低于该字节数的分段视为静音/噪声（16 kHz mono s16le ≈ 0.5 s），不算识别失败。
+_ASR_SILENCE_MIN_BYTES = 16_000
 
 
 def _is_flashtalk_compatible_model(model: str | None) -> bool:
@@ -1188,6 +1191,41 @@ async def speak_flashtalk_audio(
     return {"session_id": session_id, "status": "queued"}
 
 
+@router.get("/{session_id}/vidu")
+async def get_vidu_rtc(session_id: str, request: Request) -> dict[str, Any]:
+    """Return the Vidu S2-Avatar RTC join info for this session.
+
+    The browser uses ``rtc.app_id`` / ``rtc.channel_id`` / ``rtc.user_id`` /
+    ``rtc.token`` to join the vendor RTC channel and subscribe to the rendered
+    avatar video. Vidu renders in the cloud, so no local video track is produced.
+    """
+    r: redis.Redis = request.app.state.redis
+    s = await session_service.get_session(r, session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="session not found")
+    if (s.get("model") or "").strip().lower() != "vidu":
+        raise HTTPException(status_code=400, detail="session model is not vidu")
+    settings = request.app.state.settings
+    raw = await r.get(vidu_rtc_key(session_id))
+    if not raw:
+        raise HTTPException(
+            status_code=409,
+            detail="Vidu live session is not ready yet; retry shortly.",
+        )
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"invalid vidu rtc payload: {exc}") from exc
+    rtc = payload.get("rtc") or {}
+    return {
+        "session_id": session_id,
+        "provider": str(rtc.get("provider") or getattr(settings, "vidu_rtc_provider", "artc")),
+        "live_id": str(payload.get("live_id") or ""),
+        "rtc": rtc,
+        "fps": payload.get("fps") or getattr(settings, "vidu_fps", 25),
+    }
+
+
 @router.websocket("/{session_id}/speak_audio_stream")
 async def speak_audio_stream_ws(websocket: WebSocket, session_id: str) -> None:
     """浏览器经 WebSocket 推送 PCM s16le mono 16kHz 分块 → 流式 STT → speak 流水线。"""
@@ -1317,6 +1355,19 @@ async def speak_audio_stream_ws(websocket: WebSocket, session_id: str) -> None:
 
     stripped = text.strip()
     if not stripped:
+        # 静音/噪声触发的空分段不是故障：连续语音模式下 VAD 会把环境噪声也送上来。
+        # 只有"确实有足够语音但识别不出内容"才算真正的识别失败，避免刷红色报错。
+        if pcm_rx_stats["bytes"] < _ASR_SILENCE_MIN_BYTES:
+            log.info(
+                "STT segment skipped as silence: session=%s pcm_rx_bytes=%d",
+                session_id,
+                pcm_rx_stats["bytes"],
+            )
+            await websocket.send_json(
+                {"no_speech": True, "detail": "没有检测到有效语音"}
+            )
+            await websocket.close(code=4400)
+            return
         await websocket.send_json({"error": "未能识别有效语音，请重试。"})
         await websocket.close(code=4400)
         return

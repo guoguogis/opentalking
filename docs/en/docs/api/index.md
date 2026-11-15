@@ -71,6 +71,7 @@ Identifier formats:
 | `POST` | `/sessions/{session_id}/flashtalk-offline-bundle` | Sessions |
 | `GET` | `/sessions/{session_id}/flashtalk-offline-bundle/{job_id}` | Sessions |
 | `GET` | `/sessions/{session_id}/flashtalk-offline-bundle/{job_id}/download` | Sessions |
+| `GET` | `/sessions/{session_id}/vidu` | Sessions (Vidu cloud-rendered avatar RTC join info) |
 | `DELETE` | `/sessions/{session_id}` | Sessions |
 | `WS` | `/sessions/{session_id}/speak_audio_stream` | Events and Streaming |
 | `GET` | `/sessions/{session_id}/events` | Events and Streaming |

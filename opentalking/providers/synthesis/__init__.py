@@ -28,6 +28,11 @@ from opentalking.providers.synthesis.flashhead.ws_client import FlashHeadWSClien
 
 register("synthesis", "flashhead")(FlashHeadWSClient)
 
+# Vidu S2-Avatar 组件版: we send PCM, Vidu renders and pushes video over RTC.
+from opentalking.providers.synthesis.vidu.client import ViduAvatarClient  # noqa: E402
+
+register("synthesis", "vidu")(ViduAvatarClient)
+
 # Every model the registry recognises.
 SYNTHESIS_PROVIDERS = (
     "mock",
@@ -37,14 +42,15 @@ SYNTHESIS_PROVIDERS = (
     "fasterliveportrait",
     "flashhead",
     "quicktalk",
+    "vidu",
 )
 
 # What the upstream backend can actually serve TODAY.
 # `mock` is in-process and always works. OmniRT now exposes model-specific
 # FlashTalk-compatible routes for FlashTalk, MuseTalk, Wav2Lip, FasterLivePortrait,
-# and QuickTalk.
+# and QuickTalk. `vidu` renders in the cloud, so no local GPU model is needed.
 SUPPORTED_MODELS = frozenset(
-    {"mock", "flashtalk", "musetalk", "wav2lip", "fasterliveportrait", "quicktalk"}
+    {"mock", "flashtalk", "musetalk", "wav2lip", "fasterliveportrait", "quicktalk", "vidu"}
 )
 
 

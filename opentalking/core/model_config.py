@@ -110,7 +110,7 @@ _ENV_OVERRIDES: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-SUPPORTED_MODEL_BACKENDS = frozenset({"mock", "local", "direct_ws", "omnirt"})
+SUPPORTED_MODEL_BACKENDS = frozenset({"mock", "local", "direct_ws", "omnirt", "vidu"})
 
 _DEFAULT_MODEL_BACKENDS: dict[str, str] = {
     "mock": "mock",
@@ -120,6 +120,8 @@ _DEFAULT_MODEL_BACKENDS: dict[str, str] = {
     "fasterliveportrait": "omnirt",
     "musetalk": "omnirt",
     "wav2lip": "local",
+    # Cloud-rendered avatar: audio is sent to Vidu, video comes back over RTC.
+    "vidu": "vidu",
 }
 
 

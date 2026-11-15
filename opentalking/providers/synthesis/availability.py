@@ -147,6 +147,13 @@ async def resolve_model_statuses(settings) -> list[ModelStatus]:
                 reason = "legacy_ws" if connected else "not_configured"
             else:
                 reason = "not_configured"
+        elif resolved.backend == "vidu":
+            # Cloud-rendered avatar: reachable when an API key is configured.
+            # The avatar image may come from the bundle's reference.png, so an
+            # empty VIDU_AVATAR_IMAGE_URI is not treated as a hard failure.
+            api_key = str(getattr(settings, "vidu_api_key", "") or "").strip()
+            connected = bool(api_key)
+            reason = "vidu_configured" if connected else "not_configured"
         elif resolved.backend == "direct_ws":
             if resolved.ws_url:
                 connected = await _is_direct_ws_reachable(resolved.ws_url)

@@ -203,6 +203,7 @@ export type RuntimeConfigResponse = {
 };
 
 export type RuntimeConfigApplyInput = {
+  llm_provider?: string;
   llm_base_url?: string;
   llm_model?: string;
   llm_api_key?: string;

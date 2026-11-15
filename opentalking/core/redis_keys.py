@@ -29,6 +29,11 @@ def knowledge_prepare_job_key(file_id: str) -> str:
     return f"opentalking:knowledge:prepare:{file_id}"
 
 
+def vidu_rtc_key(session_id: str) -> str:
+    """Vidu S2-Avatar RTC join info for one Session (short-lived)."""
+    return f"opentalking:vidu:rtc:{session_id}"
+
+
 def streaming_output_index_key(session_id: str) -> str:
     """Short-lived streaming output snapshot index for one Session."""
     return f"opentalking:streaming:index:{session_id}"

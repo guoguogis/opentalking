@@ -9,9 +9,15 @@ const RUNTIME_LLM_DEFAULT = {
 
 const RUNTIME_STT_PRESETS: Record<string, { label: string; baseUrl: string; model: string; needsKey: boolean }> = {
   dashscope: {
-    label: "百炼",
+    label: "百炼后付费",
     baseUrl: "https://dashscope.aliyuncs.com",
     model: "paraformer-realtime-v2",
+    needsKey: true,
+  },
+  tokenplan: {
+    label: "百炼TokenPlan（openai compatible）",
+    baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-audio-3.0-asr-flash",
     needsKey: true,
   },
   openai_compatible: {
@@ -47,6 +53,13 @@ const RUNTIME_TTS_PRESETS: Record<TtsProviderExtended, { label: string; baseUrl:
     baseUrl: "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
     model: "qwen3-tts-flash-realtime",
     voice: "Cherry",
+    needsKey: true,
+  },
+  tokenplan_realtime: {
+    label: "百炼TokenPlan 实时（qwen realtime）",
+    baseUrl: "wss://token-plan.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime",
+    model: "qwen-audio-3.0-realtime-plus",
+    voice: "longanqian",
     needsKey: true,
   },
   cosyvoice: {
@@ -100,6 +113,41 @@ const RUNTIME_TTS_PRESETS: Record<TtsProviderExtended, { label: string; baseUrl:
   },
 };
 
+/** 下拉展示名：名称（协议），协议决定实际调用方式 */
+const PROVIDER_LABELS: Record<string, string> = {
+  tokenplan: "百炼TokenPlan（openai compatible）",
+  openai_compatible: "OpenAI 兼容（openai compatible）",
+  openai: "OpenAI（openai）",
+  dashscope: "百炼后付费（dashscope 原生）",
+  azure_openai: "Azure OpenAI（azure openai）",
+  deepseek: "DeepSeek（openai compatible）",
+  ollama: "Ollama（openai compatible）",
+};
+
+const TOKENPLAN_BASE_URL =
+  "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+
+/** 协议：决定实际调用方式（与来源名解耦，同一协议可挂多个来源） */
+const PROVIDER_PROTOCOLS: Record<string, string> = {
+  tokenplan: "openai compatible",
+  openai_compatible: "openai compatible",
+  openai: "openai",
+  dashscope: "dashscope 原生",
+  azure_openai: "azure openai",
+  deepseek: "openai compatible",
+  ollama: "openai compatible",
+};
+
+const PROVIDER_OPTIONS: string[] = [
+  "tokenplan",
+  "openai_compatible",
+  "openai",
+  "dashscope",
+  "azure_openai",
+  "deepseek",
+  "ollama",
+];
+
 const MEM0_MODEL_PRESETS = {
   llm: {
     provider: "openai",
@@ -114,6 +162,7 @@ const MEM0_MODEL_PRESETS = {
 };
 
 type RuntimeConfigForm = {
+  llmProvider: string;
   llmBaseUrl: string;
   llmModel: string;
   llmApiKey: string;
@@ -137,6 +186,7 @@ type RuntimeConfigForm = {
 };
 
 const RUNTIME_FORM_DEFAULTS: RuntimeConfigForm = {
+  llmProvider: "openai_compatible",
   llmBaseUrl: RUNTIME_LLM_DEFAULT.baseUrl,
   llmModel: RUNTIME_LLM_DEFAULT.model,
   llmApiKey: "",
@@ -156,7 +206,7 @@ const RUNTIME_FORM_DEFAULTS: RuntimeConfigForm = {
   mem0EmbedderBaseUrl: MEM0_MODEL_PRESETS.embedder.baseUrl,
   mem0EmbedderModel: MEM0_MODEL_PRESETS.embedder.model,
   mem0EmbedderApiKey: "",
-  syncDashscopeApiKey: true,
+  syncDashscopeApiKey: false,
 };
 
 function normalizeRuntimeTtsProvider(value: string | null | undefined): TtsProviderExtended {
@@ -172,15 +222,22 @@ function runtimeFormFromConfig(
   preferDashscopeWhenEdge = false,
 ): RuntimeConfigForm {
   if (!runtimeConfig) return { ...RUNTIME_FORM_DEFAULTS };
-  const sttProvider = Object.prototype.hasOwnProperty.call(RUNTIME_STT_PRESETS, runtimeConfig.stt.provider)
-    ? runtimeConfig.stt.provider
+  const configuredSttProvider =
+    runtimeConfig.stt.provider === "openai_compatible" &&
+    (runtimeConfig.stt.base_url || "").includes("token-plan")
+      ? "tokenplan"
+      : runtimeConfig.stt.provider;
+  const sttProvider = Object.prototype.hasOwnProperty.call(RUNTIME_STT_PRESETS, configuredSttProvider)
+    ? configuredSttProvider
     : "dashscope";
   const sttPreset = RUNTIME_STT_PRESETS[sttProvider] ?? RUNTIME_STT_PRESETS.dashscope;
   const resolvedTtsProvider = normalizeRuntimeTtsProvider(runtimeConfig.tts.provider);
   const ttsProvider = preferDashscopeWhenEdge && resolvedTtsProvider === "edge" ? "dashscope" : resolvedTtsProvider;
   const ttsPreset = RUNTIME_TTS_PRESETS[ttsProvider];
   return {
-    llmBaseUrl: runtimeConfig.llm.base_url || RUNTIME_LLM_DEFAULT.baseUrl,
+    llmProvider:
+    (runtimeConfig.llm as { provider?: string } | undefined)?.provider || "openai_compatible",
+  llmBaseUrl: runtimeConfig.llm.base_url || RUNTIME_LLM_DEFAULT.baseUrl,
     llmModel: runtimeConfig.llm.model || RUNTIME_LLM_DEFAULT.model,
     llmApiKey: "",
     sttProvider,
@@ -199,7 +256,7 @@ function runtimeFormFromConfig(
     mem0EmbedderBaseUrl: runtimeConfig.mem0?.embedder.base_url || MEM0_MODEL_PRESETS.embedder.baseUrl,
     mem0EmbedderModel: runtimeConfig.mem0?.embedder.model || MEM0_MODEL_PRESETS.embedder.model,
     mem0EmbedderApiKey: "",
-    syncDashscopeApiKey: true,
+    syncDashscopeApiKey: false,
   };
 }
 
@@ -266,9 +323,10 @@ export function RuntimeConfigWorkspace({
       || runtimeForm.ttsModel.trim() !== initialRuntimeForm.ttsModel.trim()
       || runtimeForm.ttsApiKey.trim() !== initialRuntimeForm.ttsApiKey.trim();
     const payload: RuntimeConfigApplyInput = {
-      llm_base_url: runtimeForm.llmBaseUrl.trim(),
+      llm_provider: runtimeForm.llmProvider === "tokenplan" ? "openai_compatible" : runtimeForm.llmProvider.trim(),
+  llm_base_url: runtimeForm.llmBaseUrl.trim(),
       llm_model: runtimeForm.llmModel.trim(),
-      stt_provider: runtimeForm.sttProvider,
+      stt_provider: runtimeForm.sttProvider === "tokenplan" ? "openai_compatible" : runtimeForm.sttProvider,
       stt_base_url: runtimeForm.sttBaseUrl.trim(),
       stt_model: runtimeForm.sttModel.trim(),
       mem0_llm_provider: runtimeForm.mem0LlmProvider.trim(),
@@ -277,7 +335,6 @@ export function RuntimeConfigWorkspace({
       mem0_embedder_provider: runtimeForm.mem0EmbedderProvider.trim(),
       mem0_embedder_base_url: runtimeForm.mem0EmbedderBaseUrl.trim(),
       mem0_embedder_model: runtimeForm.mem0EmbedderModel.trim(),
-      sync_dashscope_api_key: runtimeForm.syncDashscopeApiKey,
     };
     const llmApiKey = runtimeForm.llmApiKey.trim();
     const sttApiKey = runtimeForm.sttApiKey.trim();
@@ -311,7 +368,13 @@ export function RuntimeConfigWorkspace({
   const runtimeTtsPreset = RUNTIME_TTS_PRESETS[runtimeForm.ttsProvider];
   const runtimeTtsNeedsSetup = runtimeForm.ttsProvider !== "edge";
   const runtimeLlmKeySet = Boolean(runtimeConfig?.llm.api_key_set || runtimeForm.llmApiKey.trim());
-  const runtimeSttSavedKeySet = runtimeConfig?.stt.provider === runtimeForm.sttProvider && runtimeConfig.stt.api_key_set;
+  // tokenplan 与 openai_compatible 是同一套适配器，比较前先归一化，避免表单显示 tokenplan
+  // 而后端返回 openai_compatible 时误判成「Key 未设置」。
+  const normalizeRuntimeProviderId = (value: string | undefined): string =>
+    value === "tokenplan" ? "openai_compatible" : (value ?? "");
+  const runtimeSttSavedKeySet =
+    normalizeRuntimeProviderId(runtimeConfig?.stt.provider) ===
+      normalizeRuntimeProviderId(runtimeForm.sttProvider) && Boolean(runtimeConfig?.stt.api_key_set);
   const runtimeTtsSavedKeySet = normalizeRuntimeTtsProvider(runtimeConfig?.tts.provider) === runtimeForm.ttsProvider && runtimeConfig?.tts.api_key_set;
   const runtimeSttKeySet = Boolean(runtimeSttSavedKeySet || runtimeForm.sttApiKey.trim() || !runtimeSttPreset.needsKey);
   const runtimeTtsKeySet = Boolean(!runtimeTtsNeedsSetup || runtimeTtsSavedKeySet || runtimeForm.ttsApiKey.trim() || !runtimeTtsPreset.needsKey);
@@ -334,6 +397,28 @@ export function RuntimeConfigWorkspace({
               </span>
             </div>
             <div className="grid gap-3">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-500">名称</span>
+                <select
+                value={runtimeForm.llmProvider}
+                onChange={(event) => {
+                    const next = event.target.value;
+                    updateRuntimeForm("llmProvider", next);
+                    if (next === "tokenplan") {
+                      updateRuntimeForm("llmBaseUrl", TOKENPLAN_BASE_URL);
+                    }
+                  }}
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-cyan-300"
+              >
+                {PROVIDER_OPTIONS.includes(runtimeForm.llmProvider) ? null : (
+                  <option value={runtimeForm.llmProvider}>{runtimeForm.llmProvider}</option>
+                )}
+                {PROVIDER_OPTIONS.map((option) => (
+                  <option key={option} value={option}>{PROVIDER_LABELS[option] ?? option}</option>
+                ))}
+              </select>
+                  <span className="mt-1 block text-xs font-normal text-slate-400">协议：{PROVIDER_PROTOCOLS[runtimeForm.llmProvider] ?? "openai compatible"}</span>
+              </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-slate-500">Base URL</span>
                 <input
@@ -376,7 +461,7 @@ export function RuntimeConfigWorkspace({
             </div>
             <div className="grid gap-3">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-500">Provider</span>
+                <span className="mb-1 block text-xs font-medium text-slate-500">名称</span>
                 <select
                   value={runtimeForm.sttProvider}
                   onChange={(event) => selectRuntimeSttProvider(event.target.value)}
@@ -429,7 +514,7 @@ export function RuntimeConfigWorkspace({
             </div>
             <div className="grid gap-3 lg:grid-cols-[minmax(11rem,0.45fr)_minmax(0,1fr)]">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-500">Provider</span>
+                <span className="mb-1 block text-xs font-medium text-slate-500">名称</span>
                 <select
                   value={runtimeForm.ttsProvider}
                   onChange={(event) => selectRuntimeTtsProvider(event.target.value as TtsProviderExtended)}
@@ -489,12 +574,26 @@ export function RuntimeConfigWorkspace({
             </div>
             <div className="grid gap-3">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-500">Provider</span>
-                <input
+                <span className="mb-1 block text-xs font-medium text-slate-500">名称</span>
+                <select
                   value={runtimeForm.mem0LlmProvider}
-                  onChange={(event) => updateRuntimeForm("mem0LlmProvider", event.target.value)}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    updateRuntimeForm("mem0LlmProvider", next);
+                    if (next === "tokenplan") {
+                      updateRuntimeForm("mem0LlmBaseUrl", TOKENPLAN_BASE_URL);
+                    }
+                  }}
                   className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-cyan-300"
-                />
+                >
+                  {PROVIDER_OPTIONS.includes(runtimeForm.mem0LlmProvider) ? null : (
+                    <option value={runtimeForm.mem0LlmProvider}>{runtimeForm.mem0LlmProvider}</option>
+                  )}
+                  {PROVIDER_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{PROVIDER_LABELS[option] ?? option}</option>
+                  ))}
+                </select>
+                  <span className="mt-1 block text-xs font-normal text-slate-400">协议：{PROVIDER_PROTOCOLS[runtimeForm.mem0LlmProvider] ?? "openai compatible"}</span>
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-slate-500">Base URL</span>
@@ -538,12 +637,26 @@ export function RuntimeConfigWorkspace({
             </div>
             <div className="grid gap-3">
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-500">Provider</span>
-                <input
+                <span className="mb-1 block text-xs font-medium text-slate-500">名称</span>
+                <select
                   value={runtimeForm.mem0EmbedderProvider}
-                  onChange={(event) => updateRuntimeForm("mem0EmbedderProvider", event.target.value)}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    updateRuntimeForm("mem0EmbedderProvider", next);
+                    if (next === "tokenplan") {
+                      updateRuntimeForm("mem0EmbedderBaseUrl", TOKENPLAN_BASE_URL);
+                    }
+                  }}
                   className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 outline-none transition focus:border-cyan-300"
-                />
+                >
+                  {PROVIDER_OPTIONS.includes(runtimeForm.mem0EmbedderProvider) ? null : (
+                    <option value={runtimeForm.mem0EmbedderProvider}>{runtimeForm.mem0EmbedderProvider}</option>
+                  )}
+                  {PROVIDER_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{PROVIDER_LABELS[option] ?? option}</option>
+                  ))}
+                </select>
+                  <span className="mt-1 block text-xs font-normal text-slate-400">协议：{PROVIDER_PROTOCOLS[runtimeForm.mem0EmbedderProvider] ?? "openai compatible"}</span>
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-slate-500">Base URL</span>
@@ -578,20 +691,6 @@ export function RuntimeConfigWorkspace({
 
           <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/60 lg:col-span-2">
             <div>
-              <label className="flex min-w-0 items-start gap-3">
-                <input
-                  type="checkbox"
-                  checked={runtimeForm.syncDashscopeApiKey}
-                  onChange={(event) => updateRuntimeForm("syncDashscopeApiKey", event.target.checked)}
-                  className="mt-0.5 h-4 w-4 shrink-0 accent-cyan-600"
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold text-slate-700">同时保存为通用百炼 Key</span>
-                  <span className="mt-1 block text-xs leading-5 text-slate-500">
-                    勾选后会额外写入 DASHSCOPE_API_KEY，供百炼语音识别、语音合成及旧版配置读取。若不同服务使用不同 Key，请关闭。
-                  </span>
-                </span>
-              </label>
               <div className="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-3">
                 <button
                   type="button"

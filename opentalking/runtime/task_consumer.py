@@ -285,7 +285,7 @@ def _create_runner(
     mock_mode = backend.backend == "mock"
 
     local_audio2video_models = {"musetalk", "quicktalk", "wav2lip"}
-    if mock_mode or backend.backend in {"omnirt", "direct_ws"} or (
+    if mock_mode or backend.backend in {"omnirt", "direct_ws", "vidu"} or (
         backend.backend == "local" and model in local_audio2video_models
     ):
         audio2video_client = None
@@ -296,6 +296,30 @@ def _create_runner(
 
             audio2video_client = OmniRTAudio2VideoClient(MockFlashTalkClient())
             effective_model = "mock"
+        elif backend.backend == "vidu":
+            # Cloud-rendered avatar: we send TTS PCM to Vidu and it pushes the
+            # rendered video into an RTC channel. No local frames are produced.
+            from opentalking.providers.synthesis.vidu import ViduAvatarClient
+
+            audio2video_client = ViduAvatarClient(
+                api_key=settings.vidu_api_key,
+                base_url=settings.vidu_base_url,
+                image_uri=str(task.get("vidu_image_uri") or settings.vidu_avatar_image_uri or ""),
+                rtc_provider=settings.vidu_rtc_provider,
+                managed_rtc=bool(settings.vidu_managed_rtc),
+                voice=str(task.get("vidu_voice") or settings.vidu_voice or ""),
+                fps=float(settings.vidu_fps),
+                sample_rate=int(settings.vidu_sample_rate),
+                audio_chunk_samples=int(settings.vidu_chunk_samples),
+                width=int(settings.vidu_width),
+                height=int(settings.vidu_height),
+                idle_timeout_seconds=int(settings.vidu_idle_timeout_seconds),
+                enable_recording=bool(settings.vidu_enable_recording),
+                persona=str(task.get("llm_system_prompt", "") or ""),
+                redis=r,
+                session_id=sid,
+            )
+            effective_model = "vidu"
         elif model == "flashhead":
             from opentalking.providers.synthesis.flashhead import FlashHeadWSClient
 

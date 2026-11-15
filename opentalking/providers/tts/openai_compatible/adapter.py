@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import base64
 import io
 from typing import Any, AsyncIterator
@@ -94,6 +96,34 @@ class OpenAICompatibleTTSAdapter:
         timeout = httpx.Timeout(connect=30.0, read=180.0, write=30.0, pool=30.0)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
+            if self.protocol in {"dashscope_tts", "speech_synthesizer"}:
+                # Bailian TokenPlan TTS speaks the DashScope protocol: the audio is
+                # returned as a time-limited URL, not as the response body.
+                payload: dict[str, Any] = {
+                    "model": self.model,
+                    "input": {
+                        "text": text,
+                        "voice": effective_voice,
+                        "format": "wav",
+                        "sample_rate": 24000,
+                    },
+                }
+                resp = await client.post(_dashscope_tts_url(self.base_url), headers=headers, json=payload)
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise RuntimeError(
+                        f"DashScope TTS failed ({exc.response.status_code}): {resp.text.strip()}"
+                    ) from exc
+                audio_url = ((resp.json().get("output") or {}).get("audio") or {}).get("url", "")
+                if not audio_url:
+                    raise RuntimeError(f"DashScope TTS returned no audio url: {resp.text[:200]}")
+                audio_resp = await client.get(audio_url)
+                audio_resp.raise_for_status()
+                pcm = _decode_wav_to_pcm16_mono(audio_resp.content, self.sample_rate)
+                for chunk in _split_pcm_chunks(pcm, self.sample_rate, self.chunk_ms):
+                    yield chunk
+                return
             if self.protocol in {"chat_completions", "chat"}:
                 payload: dict[str, Any] = {
                     "model": self.model,
@@ -209,3 +239,16 @@ def _tts_extract_chat_audio(self: OpenAICompatibleTTSAdapter, resp: httpx.Respon
         raise RuntimeError("OpenAI-compatible TTS chat response is not valid JSON.") from exc
 
 OpenAICompatibleTTSAdapter._extract_chat_audio = _tts_extract_chat_audio
+
+
+def _dashscope_tts_url(base_url: str) -> str:
+    """DashScope SpeechSynthesizer endpoint on the same host as base_url."""
+    override = os.environ.get("OPENTALKING_TTS_OPENAI_DASHSCOPE_URL", "").strip()
+    if override:
+        return override
+    host = base_url
+    for suffix in ("/compatible-mode/v1", "/compatible-mode", "/v1"):
+        if host.endswith(suffix):
+            host = host[: -len(suffix)]
+            break
+    return f"{host}/api/v1/services/audio/tts/SpeechSynthesizer"

@@ -121,3 +121,5 @@ models:
     backend: direct_ws
   quicktalk:
     backend: omnirt
+  vidu:
+    backend: vidu

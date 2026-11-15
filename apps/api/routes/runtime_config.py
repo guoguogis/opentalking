@@ -102,6 +102,7 @@ _RUNTIME_ENV_KEYS = {
 
 
 class RuntimeConfigPayload(BaseModel):
+    llm_provider: Optional[str] = Field(default=None, max_length=64)
     llm_base_url: Optional[str] = Field(default=None, max_length=2048)
     llm_model: Optional[str] = Field(default=None, max_length=256)
     llm_api_key: Optional[str] = Field(default=None, max_length=4096)
@@ -122,7 +123,7 @@ class RuntimeConfigPayload(BaseModel):
     mem0_embedder_base_url: Optional[str] = Field(default=None, max_length=2048)
     mem0_embedder_api_key: Optional[str] = Field(default=None, max_length=4096)
     mem0_embedder_model: Optional[str] = Field(default=None, max_length=256)
-    sync_dashscope_api_key: bool = True
+    sync_dashscope_api_key: bool = False  # 各服务单独保存 Key，默认不再写全局 DASHSCOPE_API_KEY
 
 
 def _strip(value: str | None) -> str:
@@ -500,6 +501,9 @@ def _current_payload(settings: Any | None = None) -> dict[str, Any]:
     llm_key = _env_value(values, "OPENTALKING_LLM_API_KEY", _settings_value(settings, "llm_api_key"))
     return {
         "llm": {
+            "provider": _env_value(
+                values, "OPENTALKING_LLM_PROVIDER", _settings_value(settings, "llm_provider")
+            ),
             "base_url": _env_value(values, "OPENTALKING_LLM_BASE_URL", _settings_value(settings, "llm_base_url")).rstrip("/"),
             "model": _env_value(values, "OPENTALKING_LLM_MODEL", _settings_value(settings, "llm_model", "qwen-flash")),
             "api_key_set": bool(llm_key),
@@ -514,6 +518,10 @@ def _build_updates(payload: RuntimeConfigPayload) -> dict[str, str]:
     updates: dict[str, str] = {"OPENTALKING_LLM_PROVIDER": "openai_compatible"}
     sync_key = ""
 
+    if value := _strip(payload.llm_provider):
+        updates["OPENTALKING_LLM_PROVIDER"] = (
+            "openai_compatible" if value.lower() == "tokenplan" else value
+        )
     if value := _strip(payload.llm_base_url):
         updates["OPENTALKING_LLM_BASE_URL"] = value.rstrip("/")
     if value := _strip(payload.llm_model):
@@ -561,6 +569,9 @@ def _build_updates(payload: RuntimeConfigPayload) -> dict[str, str]:
 
     tts_provider = ""
     if raw := _strip(payload.tts_provider):
+        if raw == "tokenplan_realtime":
+            # TokenPlan 实时语音复用 Qwen realtime 的协议与适配器，落到 dashscope 变量组
+            raw = "dashscope"
         try:
             normalized = normalize_tts_provider(raw, default=None) or ""
         except ValueError as exc:

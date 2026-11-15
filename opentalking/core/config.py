@@ -162,6 +162,10 @@ def _flatten_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             "dashscope_api_key": "tts_dashscope_api_key",
             "dashscope_voice": "tts_dashscope_voice",
             "dashscope_service_url": "tts_dashscope_service_url",
+            "tokenplan_base_url": "tts_tokenplan_base_url",
+            "tokenplan_api_key": "tts_tokenplan_api_key",
+            "tokenplan_model": "tts_tokenplan_model",
+            "tokenplan_voice": "tts_tokenplan_voice",
             "cosyvoice_model": "tts_cosyvoice_model",
             "cosyvoice_service_url": "tts_cosyvoice_service_url",
             "sambert_model": "tts_sambert_model",
@@ -292,6 +296,10 @@ def _load_yaml_source() -> dict[str, Any]:
 
 def _legacy_env_mapping() -> dict[str, str]:
     return {
+        "VIDU_API_KEY": "vidu_api_key",
+        "VIDU_BASE_URL": "vidu_base_url",
+        "VIDU_AVATAR_IMAGE_URI": "vidu_avatar_image_uri",
+        "VIDU_RTC_PROVIDER": "vidu_rtc_provider",
         "FLASHTALK_WS_URL": "flashtalk_ws_url",
         "FLASHTALK_FRAME_NUM": "flashtalk_frame_num",
         "FLASHTALK_MOTION_FRAMES_NUM": "flashtalk_motion_frames_num",
@@ -455,6 +463,23 @@ class Settings(BaseSettings):
     avatar_matting_device: str = "cpu"
     avatar_matting_model_path: str = ""
     avatar_matting_timeout_sec: int = 60
+
+    # Vidu S2-Avatar (数字人组件版). OpenTalking keeps ASR/LLM/TTS; Vidu only
+    # renders the avatar and pushes video into an RTC channel, so no local GPU
+    # model is involved. See docs/zh/model-deployment/vidu-avatar.md
+    vidu_api_key: str = ""
+    vidu_base_url: str = "https://api.vidu.cn"
+    vidu_avatar_image_uri: str = ""
+    vidu_rtc_provider: str = "artc"
+    vidu_managed_rtc: bool = True
+    vidu_voice: str = ""
+    vidu_fps: int = 25
+    vidu_sample_rate: int = 16000
+    vidu_chunk_samples: int = 4800
+    vidu_width: int = 720
+    vidu_height: int = 1280
+    vidu_idle_timeout_seconds: int = 7200
+    vidu_enable_recording: bool = False
 
     flashtalk_ws_url: str = ""
     flashtalk_ckpt_dir: str = "./models/SoulX-FlashTalk-14B"

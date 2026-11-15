@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import queue
 import tempfile
 import time
@@ -53,6 +54,23 @@ class OpenAICompatibleSTTAdapter:
         self.protocol = (protocol or "audio_transcriptions").strip().lower()
         self.audio_format = (audio_format or "wav").strip().lower()
 
+    def _dashscope_url(self) -> str:
+        """DashScope multimodal-generation endpoint for the same host.
+
+        ``base_url`` normally ends with ``/compatible-mode/v1``; the ASR model on
+        a TokenPlan host only answers on ``/api/v1/services/aigc/...``.
+        Override explicitly with ``OPENTALKING_STT_OPENAI_DASHSCOPE_URL``.
+        """
+        override = os.environ.get("OPENTALKING_STT_OPENAI_DASHSCOPE_URL", "").strip()
+        if override:
+            return override
+        host = self.base_url
+        for suffix in ("/compatible-mode/v1", "/compatible-mode", "/v1"):
+            if host.endswith(suffix):
+                host = host[: -len(suffix)]
+                break
+        return f"{host}/api/v1/services/aigc/multimodal-generation/generation"
+
     def transcribe_wav(self, wav_path: str | Path) -> tuple[str, float]:
         if not self.api_key:
             raise RuntimeError("OpenAI-compatible STT selected but OPENTALKING_STT_OPENAI_API_KEY is empty.")
@@ -66,7 +84,31 @@ class OpenAICompatibleSTTAdapter:
         timeout = httpx.Timeout(connect=30.0, read=180.0, write=30.0, pool=30.0)
         t0 = time.perf_counter()
         with httpx.Client(timeout=timeout) as client:
-            if self.protocol in {"chat_completions", "chat"}:
+            if self.protocol in {"dashscope_multimodal", "multimodal_generation", "qwen_audio_asr"}:
+                # Bailian TokenPlan / Qwen-Audio-ASR speaks the DashScope protocol:
+                # POST /api/v1/services/aigc/multimodal-generation/generation
+                # with a data URI audio part. There is no /audio/transcriptions.
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                data_url = f"data:audio/{self.audio_format};base64,{encoded}"
+                parameters: dict[str, Any] = {"format": self.audio_format}
+                if self.language:
+                    parameters["language_hints"] = [self.language]
+                payload = {
+                    "model": self.model,
+                    "input": {
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_audio", "input_audio": {"data": data_url}}
+                                ],
+                            }
+                        ]
+                    },
+                    "parameters": parameters,
+                }
+                resp = client.post(self._dashscope_url(), headers=headers, json=payload)
+            elif self.protocol in {"chat_completions", "chat"}:
                 encoded = base64.b64encode(path.read_bytes()).decode("ascii")
                 data_url = f"data:audio/{self.audio_format};base64,{encoded}"
                 payload = {
@@ -101,6 +143,15 @@ class OpenAICompatibleSTTAdapter:
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            # TokenPlan/Qwen-Audio-ASR answers 400 with an empty body when the clip holds no
+            # speech. That is "nothing heard", not a provider failure: return an empty
+            # transcript so the caller can emit a soft no_speech hint.
+            if (
+                self.protocol in {"dashscope_multimodal", "multimodal_generation", "qwen_audio_asr"}
+                and exc.response.status_code in {400, 422}
+                and resp.text.strip() in {"", "{}"}
+            ):
+                return "", elapsed_ms
             raise RuntimeError(
                 f"OpenAI-compatible STT failed ({exc.response.status_code}): {resp.text.strip()}"
             ) from exc
@@ -131,6 +182,11 @@ class OpenAICompatibleSTTAdapter:
         except ValueError:
             return resp.text.strip()
         if isinstance(payload, dict):
+            output = payload.get("output")
+            if isinstance(output, dict):
+                dashscope_text = output.get("text")
+                if isinstance(dashscope_text, str) and dashscope_text.strip():
+                    return dashscope_text.strip()
             text = payload.get("text") or payload.get("sentence")
             if isinstance(text, str):
                 return text.strip()

@@ -1,4 +1,4 @@
-import {
+﻿import {
   useRef,
   useState,
   useCallback,
@@ -27,7 +27,7 @@ function floatToInt16Buffer(input: Float32Array): ArrayBuffer {
 /** 流式 STT：等待服务端 JSON；无超时会导致 uploadLock 永不释放，VAD 永久卡死 */
 const STT_WS_REPLY_MS = 55_000;
 
-async function awaitSttWsReply(ws: WebSocket): Promise<{ text?: string; error?: string }> {
+async function awaitSttWsReply(ws: WebSocket): Promise<{ text?: string; error?: string; no_speech?: boolean; detail?: string }> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (fn: () => void) => {
@@ -50,7 +50,12 @@ async function awaitSttWsReply(ws: WebSocket): Promise<{ text?: string; error?: 
       settle(() => {
         ws.onclose = null;
         try {
-          resolve(JSON.parse(ev.data as string) as { text?: string; error?: string });
+          resolve(JSON.parse(ev.data as string) as {
+            text?: string;
+            error?: string;
+            no_speech?: boolean;
+            detail?: string;
+          });
         } catch {
           reject(new Error("服务器返回非 JSON"));
         }
@@ -95,6 +100,8 @@ interface ChatInputProps {
   /** 与 streamingAsrSessionId 同时传入时，语音走 WS 流式 PCM → 后端流式 STT */
   onSpeakAudioStreamResult?: (payload: { text: string }) => void | Promise<void>;
   onSpeakAudioStreamError?: (message: string) => void;
+  /** 静音/噪声触发，没有识别到内容；不是错误。 */
+  onSpeakAudioStreamNoSpeech?: () => void;
   /** 当前会话 id（live 时）：启用真流式 STT */
   streamingAsrSessionId?: string | null;
   onInterrupt: () => void;
@@ -156,6 +163,7 @@ export function ChatInput({
   onSpeakFlashtalkAudioFile,
   onSpeakAudioStreamResult,
   onSpeakAudioStreamError,
+  onSpeakAudioStreamNoSpeech,
   streamingAsrSessionId = null,
   onInterrupt,
   isSpeaking,
@@ -226,6 +234,8 @@ export function ChatInput({
   const onSpeakAudioStreamResultRef = useRef(onSpeakAudioStreamResult);
   onSpeakAudioStreamResultRef.current = onSpeakAudioStreamResult;
 
+  const onSpeakAudioStreamNoSpeechRef = useRef(onSpeakAudioStreamNoSpeech);
+  onSpeakAudioStreamNoSpeechRef.current = onSpeakAudioStreamNoSpeech;
   const onSpeakAudioStreamErrorRef = useRef(onSpeakAudioStreamError);
   onSpeakAudioStreamErrorRef.current = onSpeakAudioStreamError;
 
@@ -260,6 +270,11 @@ export function ChatInput({
         ws.close();
       } catch {
         /* ignore */
+      }
+      if (reply.no_speech) {
+        // Silence / background noise: nothing was said, so this is not an error.
+        onSpeakAudioStreamNoSpeechRef.current?.();
+        return null;
       }
       if (reply.error) {
         throw new Error(reply.error);

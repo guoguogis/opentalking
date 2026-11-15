@@ -70,6 +70,7 @@ multipart 上传（`multipart/form-data`）。
 | `POST` | `/sessions/{session_id}/flashtalk-offline-bundle` | 会话 |
 | `GET` | `/sessions/{session_id}/flashtalk-offline-bundle/{job_id}` | 会话 |
 | `GET` | `/sessions/{session_id}/flashtalk-offline-bundle/{job_id}/download` | 会话 |
+| `GET` | `/sessions/{session_id}/vidu` | 会话（Vidu 云端渲染的 RTC 入会信息） |
 | `DELETE` | `/sessions/{session_id}` | 会话 |
 | `WS` | `/sessions/{session_id}/speak_audio_stream` | 事件与流式接口 |
 | `GET` | `/sessions/{session_id}/events` | 事件与流式接口 |

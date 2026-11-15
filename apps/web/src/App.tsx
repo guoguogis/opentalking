@@ -63,6 +63,7 @@ import {
 } from "./lib/ttsPreview";
 import type { VoiceCloneApplication } from "./lib/voiceCloneApply";
 import { startPlayback } from "./lib/webrtc";
+import { startViduPlayback, viduUsesLocalAudio, ViduRtcUnavailableError, type ViduRtcHandle } from "./lib/viduRtc";
 import {
   DEFAULT_EDGE_VOICE_ID,
   EDGE_VOICE_STORAGE_KEY,
@@ -314,7 +315,7 @@ const STT_MODEL_BY_PROVIDER: Record<string, string> = {
 
 function normalizeAsrProvider(value: string | null | undefined, fallback = "dashscope"): string {
   const provider = (value ?? "").trim();
-  return ["dashscope", "xiaomi_mimo", "openai_compatible", "sensevoice"].includes(provider) ? provider : fallback;
+  return ["dashscope", "xiaomi_mimo", "openai_compatible", "sensevoice", "tokenplan"].includes(provider) ? provider : fallback;
 }
 
 function sttModelForProvider(provider: string): string {
@@ -873,6 +874,8 @@ function realtimeRecordingStartErrorMessage(error: unknown): string {
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const viduVideoRef = useRef<HTMLVideoElement>(null);
+  const viduRtcRef = useRef<ViduRtcHandle | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -1765,12 +1768,13 @@ export default function App() {
     if (video.srcObject !== remoteStream) {
       video.srcObject = remoteStream;
     }
+    // Sound is rendered by the dedicated <audio ref={audioRef}> element only.
+    // Attaching the same MediaStream to a second (unmuted) element plays the
+    // audio twice — with a small offset — which sounds like two voices.
+    video.muted = true;
+    video.volume = 0;
     if (remoteStream) {
-      video.muted = false;
-      video.volume = 1;
       playWithMutedFallback(video);
-    } else {
-      video.muted = true;
     }
   }, [conversationViewMode, remoteStream, workflow]);
 
@@ -1782,13 +1786,19 @@ export default function App() {
       return;
     }
     audio.srcObject = remoteStream;
-    audio.muted = false;
-    audio.volume = 1;
-    void audio.play().catch(() => {});
+    // For vidu the cloud renderer publishes its own lip-synced audio track,
+    // which the overlay <video> plays. Keeping this sink unmuted as well would
+    // play the reply twice (and the local copy leads the rendered mouth).
+    const viduOwnsAudio = model === "vidu" && !viduUsesLocalAudio();
+    audio.muted = viduOwnsAudio;
+    audio.volume = viduOwnsAudio ? 0 : 1;
+    if (!viduOwnsAudio) {
+      void audio.play().catch(() => {});
+    }
     return () => {
       audio.srcObject = null;
     };
-  }, [remoteStream]);
+  }, [remoteStream, model]);
 
   useEffect(() => {
     return () => {
@@ -1881,6 +1891,14 @@ export default function App() {
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
+    }
+    if (viduRtcRef.current) {
+      try {
+        viduRtcRef.current.leave();
+      } catch (error) {
+        console.warn("Failed to leave Vidu RTC channel", error);
+      }
+      viduRtcRef.current = null;
     }
     if (remoteStreamRef.current) {
       for (const track of remoteStreamRef.current.getTracks()) track.stop();
@@ -2309,7 +2327,28 @@ export default function App() {
       remoteStreamRef.current = playback.remoteStream;
       setRemoteStream(playback.remoteStream);
       setActiveAsrProvider(lockedAsrProvider);
-      videoRef.current!.muted = false;
+      // Keep the stage video silent: <audio ref={audioRef}> is the single
+      // audio sink, otherwise the same track plays twice.
+      videoRef.current!.muted = true;
+      if (model === "vidu") {
+        // Vidu renders the avatar in the cloud and pushes it over RTC; the
+        // local WebRTC track above carries our TTS audio.
+        const viduEl = viduVideoRef.current;
+        if (!viduEl) {
+          notify("Vidu 画面容器未就绪，未能加入云端画面频道。请刷新页面重试。", "error");
+        } else {
+          try {
+            viduRtcRef.current = await startViduPlayback(created.session_id, viduEl);
+          } catch (error) {
+            if (error instanceof ViduRtcUnavailableError) {
+              notify(error.message, "error");
+            } else {
+              console.warn("Failed to start Vidu RTC playback", error);
+              notify("语音链路已连接，但云端数字人画面未能加入 RTC 频道，请查看控制台日志。", "error");
+            }
+          }
+        }
+      }
       setConnection("live");
       await apiPost(`/sessions/${created.session_id}/start`, {});
       notify("会话已连接，可以开始文本、语音或音频驱动。", "success");
@@ -2563,6 +2602,12 @@ export default function App() {
 
   const handleSpeakAudioStreamError = useCallback((message: string) => {
     const detail = message || "语音识别失败，请检查 STT 配置。";
+    // 空转写（噪声/尾音/静音）不是故障：后端在静音与空识别两种情况下都会给这句文案，
+    // 统一降级为轻提示，避免每段环境噪声都刷一条红色报错。
+    if (detail.includes("未能识别有效语音") || detail.includes("没有检测到有效语音")) {
+      notify("没有听清，请再说一次", "info");
+      return;
+    }
     appendAssistantError(`语音识别失败：${detail}`);
     notify(`语音识别失败：${detail}`, "error");
   }, [appendAssistantError, notify]);
@@ -2601,6 +2646,11 @@ export default function App() {
         // 勿将 connection 置为 error，否则会重新出现「开始 Demo」全屏遮罩
         console.warn("speak_audio failed", error);
         const detail = apiErrorMessage(error, "请检查 STT 配置和后端日志。");
+        if (detail.includes("未能识别有效语音") || detail.includes("没有检测到有效语音")) {
+          // 静音段：没听清不是故障，给个轻提示就够了。
+          notify("没有听清，请再说一次", "info");
+          return;
+        }
         appendAssistantError(`语音识别失败：${detail}`);
         notify(`语音识别失败：${detail}`, "error");
       } finally {
@@ -3253,6 +3303,16 @@ export default function App() {
                 )}
               </SceneStage>
 
+              {model === "vidu" ? (
+                <video
+                  ref={viduVideoRef}
+                  className="pointer-events-none absolute inset-0 z-20 h-full w-full bg-black object-contain"
+                  autoPlay
+                  playsInline
+                  aria-label="Vidu 云端数字人画面"
+                />
+              ) : null}
+
               {showStart ? (
                 <div className="absolute inset-0 z-40 bg-white">
                   <AvatarSelectionStage
@@ -3303,6 +3363,7 @@ export default function App() {
                 streamingAsrSessionId={sessionId}
                 onSpeakAudioStreamResult={handleSpeakAudioStreamResult}
                 onSpeakAudioStreamError={handleSpeakAudioStreamError}
+                onSpeakAudioStreamNoSpeech={() => notify("没有听清，请再说一次", "info")}
                 onInterrupt={handleInterrupt}
                 isSpeaking={isSpeaking}
                 disabled={connection !== "live" && connection !== "expiring"}

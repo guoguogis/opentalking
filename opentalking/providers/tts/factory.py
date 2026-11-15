@@ -1188,6 +1188,24 @@ def create_tts_adapter(
             ),
             indextts_config=indextts_config,
         )
+    if p == "tokenplan_realtime":
+        from opentalking.providers.tts.tokenplan_realtime.adapter import (
+            TokenPlanRealtimeTTSAdapter,
+        )
+
+        return TokenPlanRealtimeTTSAdapter(
+            api_key=_provider_env("tokenplan_realtime", "API_KEY")
+            or _settings_value("tts_tokenplan_api_key", ""),
+            base_url=_provider_env("tokenplan_realtime", "BASE_URL")
+            or _settings_value("tts_tokenplan_base_url", ""),
+            model=(tts_model or "").strip()
+            or _provider_env("tokenplan_realtime", "MODEL")
+            or _settings_value("tts_tokenplan_model", ""),
+            voice=(default_voice or "").strip()
+            or _provider_env("tokenplan_realtime", "VOICE")
+            or _settings_value("tts_tokenplan_voice", ""),
+        )
+
     if p in _OPENAI_COMPATIBLE or p in _XIAOMI_MIMO:
         from opentalking.providers.tts.openai_compatible.adapter import OpenAICompatibleTTSAdapter
 

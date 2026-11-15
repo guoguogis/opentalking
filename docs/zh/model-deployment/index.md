@@ -48,6 +48,7 @@ flowchart LR
 | 单卡实时头像贴回链路 | [FasterLivePortrait](../avatar_models/fasterliveportrait.md) |
 | 高质量重模型 | [FlashTalk](../avatar_models/flashtalk.md) |
 | 独立 FlashHead 服务 | [FlashHead](../avatar_models/flashhead.md) |
+| 云端渲染数字人（无需 GPU） | [Vidu S2-Avatar](vidu-avatar.md) |
 
 模型执行应与 OpenTalking 编排层解耦：轻量模型优先使用 `local` 或 `direct_ws`，OmniRT
 保留为重模型、多卡、远端或 NPU 部署的推荐 backend。

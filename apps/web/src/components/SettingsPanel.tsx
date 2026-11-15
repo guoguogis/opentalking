@@ -4,7 +4,9 @@ import type { AvatarSummary, KnowledgeBaseSummary } from "../lib/api";
 import { modelLabel } from "../lib/modelLabels";
 import { modelConnectionBadge, type ModelStatus } from "../lib/modelStatus";
 import { isDogoLight2dAvatar } from "../light2d/avatarSelection";
+import { TOKENPLAN_VOICE_OPTIONS } from "../constants/ttsBailian";
 import type { TtsProviderExtended } from "../constants/ttsBailian";
+import { requestTTSPreview, type TTSPreviewPayload } from "../lib/ttsPreview";
 import type { MemoryLibrary } from "../types";
 
 type VoiceOpt = { id: string; label: string; targetModel?: string | null };
@@ -52,48 +54,93 @@ export const DEFAULT_FASTLIVEPORTRAIT_CONFIG: FasterLivePortraitConfig = {
 export const SETTINGS_DOCK_EXPANDED_KEY = "opentalking-settings-dock-expanded";
 const TTS_PREVIEW_TEXT_MAX_CHARS = 1000;
 
+
+/** 试听当前音色：合成后立即播放 */
+function VoicePreviewButton({ provider, voice, model }: { provider: string; voice: string; model: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const handlePreview = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const blob = await requestTTSPreview({
+        text: "你好，我是数字人主播，很高兴认识你。",
+        tts_provider: provider,
+        voice,
+        tts_model: model,
+      } as TTSPreviewPayload);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => URL.revokeObjectURL(url);
+      await audio.play();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "试听失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={handlePreview}
+        disabled={busy}
+        className="rounded-md border border-cyan-300 bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50"
+      >
+        {busy ? "合成中…" : "试听"}
+      </button>
+      {error ? <span className="text-[11px] font-medium text-rose-600">{error}</span> : null}
+    </div>
+  );
+}
+
 const TTS_PROVIDER_LABELS: Record<TtsProviderExtended, string> = {
   edge: "Edge",
-  dashscope: "Qwen",
-  cosyvoice: "Cosy",
-  sambert: "Sambert",
-  local_cosyvoice: "Local CosyVoice",
-  indextts: "Local IndexTTS",
-  local_f5_tts: "Local F5-TTS",
+  dashscope: "百炼 Qwen",
+  cosyvoice: "百炼 CosyVoice",
+  sambert: "百炼 Sambert",
+  local_cosyvoice: "本地 CosyVoice",
+  indextts: "本地 IndexTTS",
+  local_f5_tts: "本地 F5-TTS",
   xiaomi_mimo: "小米 MiMo",
-  openai_compatible: "OpenAI API",
+  openai_compatible: "百炼TokenPlan",
+  tokenplan_realtime: "百炼TokenPlan 实时",
 };
 
 const TTS_PROVIDER_SUBTITLES: Record<TtsProviderExtended, string> = {
-  edge: "Neural",
-  dashscope: "Realtime",
-  cosyvoice: "Bailian",
-  sambert: "Bailian",
-  local_cosyvoice: "本地模型",
-  indextts: "本地部署",
-  local_f5_tts: "本地模型",
-  xiaomi_mimo: "OpenAI 兼容",
-  openai_compatible: "OpenAI-compatible",
+  edge: "本地合成 · Neural",
+  dashscope: "dashscope realtime · WS",
+  tokenplan_realtime: "dashscope realtime · WS · 实验（暂不可用）",
+  cosyvoice: "dashscope · WS",
+  sambert: "dashscope · HTTP",
+  local_cosyvoice: "本地模型 · HTTP",
+  indextts: "本地部署 · HTTP",
+  local_f5_tts: "本地模型 · HTTP",
+  xiaomi_mimo: "openai compatible · HTTP",
+  openai_compatible: "openai compatible · HTTP",
 };
 
 const ASR_PROVIDER_LABELS: Record<string, string> = {
-  dashscope: "API 语音识别",
+  dashscope: "百炼 Paraformer",
   xiaomi_mimo: "小米 MiMo 识别",
-  openai_compatible: "OpenAI API 识别",
-  sensevoice: "SenseVoiceSmall",
+  openai_compatible: "百炼TokenPlan",
+  tokenplan: "百炼TokenPlan",
+  sensevoice: "本地 SenseVoice",
 };
 
 const ASR_PROVIDER_SUBTITLES: Record<string, string> = {
-  dashscope: "百炼 API",
-  xiaomi_mimo: "MiMo ASR",
-  openai_compatible: "OpenAI-compatible",
-  sensevoice: "本地模型",
+  dashscope: "dashscope · WS 流式",
+  xiaomi_mimo: "openai compatible · HTTP",
+  openai_compatible: "openai compatible · HTTP",
+  tokenplan: "openai compatible · HTTP",
+  sensevoice: "本地模型 · HTTP",
 };
 
 const ASR_PROVIDER_MODELS: Record<string, string> = {
   dashscope: "paraformer-realtime-v2",
   xiaomi_mimo: "mimo-v2.5-asr",
-  openai_compatible: "OpenAI-compatible ASR",
+  openai_compatible: "qwen-audio-3.0-asr-flash",
+  tokenplan: "qwen-audio-3.0-asr-flash",
   sensevoice: "iic/SenseVoiceSmall",
 };
 
@@ -486,14 +533,14 @@ export function SettingsPanel({
     subtitle: option.id,
     hasChildren: true,
   }));
-  const providerOptions: ColumnOption[] = (["edge", "dashscope", "cosyvoice", "sambert", "local_cosyvoice", "indextts", "local_f5_tts", "xiaomi_mimo", "openai_compatible"] as TtsProviderExtended[]).map((p) => ({
+  const providerOptions: ColumnOption[] = (Object.keys(TTS_PROVIDER_LABELS) as TtsProviderExtended[]).map((p) => ({
     id: p,
     label: TTS_PROVIDER_LABELS[p],
     subtitle: TTS_PROVIDER_SUBTITLES[p],
     hasChildren: true,
   }));
   const selectedProvider = providerOptions.find((option) => option.id === ttsProvider) ?? providerOptions[0];
-  const asrProviderOptions: ColumnOption[] = ["sensevoice", "dashscope", "xiaomi_mimo", "openai_compatible"].map((p) => ({
+  const asrProviderOptions: ColumnOption[] = Object.keys(ASR_PROVIDER_LABELS).map((p) => ({
     id: p,
     label: ASR_PROVIDER_LABELS[p] ?? p,
     subtitle: ASR_PROVIDER_SUBTITLES[p] ?? p,
@@ -996,18 +1043,27 @@ export function SettingsPanel({
                         onChange={onEdgeVoiceChange}
                       />
                     ) : ttsProvider === "openai_compatible" ? (
-                      <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-                        <p className="text-xs font-semibold text-slate-700">后端默认音色</p>
-                        <p className="mt-1 text-[11px] leading-relaxed text-slate-500">使用 OPENTALKING_TTS_OPENAI_VOICE；如服务不需要 voice 字段，可在 .env 中留空或使用服务默认值。</p>
+                      <div className="space-y-2">
+                        <LevelTwoList
+                          title="音色"
+                          options={TOKENPLAN_VOICE_OPTIONS}
+                          value={qwenVoice}
+                          onChange={onQwenVoiceChange}
+                          emptyText="该来源没有可选音色，请在 .env 中设置 OPENTALKING_TTS_OPENAI_VOICE。"
+                        />
+                        <VoicePreviewButton provider={ttsProvider} voice={qwenVoice} model={qwenModel} />
                       </div>
                     ) : (
-                      <LevelTwoList
-                        title="音色"
-                        options={qwenVoiceColumnOptions}
-                        value={qwenVoice}
-                        onChange={onQwenVoiceChange}
-                        emptyText="当前模型没有可用音色。若选择的是音色复刻模型，请先完成录音复刻。"
-                      />
+                      <div className="space-y-2">
+                        <LevelTwoList
+                          title="音色"
+                          options={qwenVoiceColumnOptions}
+                          value={qwenVoice}
+                          onChange={onQwenVoiceChange}
+                          emptyText="当前模型没有可用音色。若选择的是音色复刻模型，请先完成录音复刻。"
+                        />
+                        <VoicePreviewButton provider={ttsProvider} voice={qwenVoice} model={qwenModel} />
+                      </div>
                     )}
                   </div>
                 </div>

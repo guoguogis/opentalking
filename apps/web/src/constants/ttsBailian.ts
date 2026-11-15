@@ -34,6 +34,21 @@ export const LOCAL_F5_TTS_MODEL_OPTIONS: { id: string; label: string }[] = [
 
 export const LOCAL_TTS_VOICE_OPTIONS: { id: string; label: string }[] = [];
 
+/** 百炼 TokenPlan 音色（qwen-audio-3.0-tts-plus / realtime-plus） */
+export const TOKENPLAN_VOICE_OPTIONS: { id: string; label: string }[] = [
+  { id: "longanqian", label: "龙安倩 · 通用女声" },
+  { id: "longanhuan_v3.6", label: "龙安欢 v3.6 · 播报女声" },
+  { id: "longanlingxin", label: "龙安灵心 · 温柔女声" },
+  { id: "longanwenrou", label: "龙安温柔 · 亲和女声" },
+];
+
+/** 百炼 Qwen realtime 音色 */
+export const QWEN_TTS_VOICE_OPTIONS: { id: string; label: string }[] = [
+  { id: "Cherry", label: "Cherry · 甜美女声" },
+  { id: "Serena", label: "Serena · 知性女声" },
+  { id: "Ethan", label: "Ethan · 沉稳男声" },
+];
+
 export const XIAOMI_MIMO_MODEL_OPTIONS: { id: string; label: string }[] = [
   { id: "mimo-v2.5-tts", label: "MiMo v2.5 TTS" },
   { id: "mimo-v2.5-tts-voiceclone", label: "MiMo v2.5 TTS VoiceClone" },
@@ -60,7 +75,8 @@ export type TtsProviderExtended =
   | "indextts"
   | "local_f5_tts"
   | "xiaomi_mimo"
-  | "openai_compatible";
+  | "openai_compatible"
+  | "tokenplan_realtime";
 
 export function isEdgeTts(p: string): boolean {
   return p === "edge";

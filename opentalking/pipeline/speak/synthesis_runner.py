@@ -1222,6 +1222,10 @@ class FlashTalkRunner:
                 continue
 
     async def _idle_tick(self) -> None:
+        # Vidu pushes an idle-rendered video track over RTC; there is nothing to
+        # replay locally.
+        if self.model_type == "vidu":
+            return
         program = getattr(self, "program", None)
         if not self.webrtc and not program:
             return
@@ -1595,6 +1599,9 @@ class FlashTalkRunner:
             await temp_client.close(send_close_msg=False)
 
     async def _prepare_idle_cache(self, ref_image_path: Path) -> None:
+        # Vidu renders idle motion server-side; skip local idle cache building.
+        if self.model_type == "vidu":
+            return
         avatar_dir = self.avatar_path()
         cache_path = self._idle_cache_path(avatar_dir)
         cache_key = self._make_idle_cache_key(ref_image_path)
@@ -3073,6 +3080,10 @@ class FlashTalkRunner:
         t0 = _t.monotonic()
         if source == "idle" and (self._speaking or self._closed):
             return []
+        # Vidu renders its own idle motion in the cloud; never stream silence
+        # to it just to produce local idle frames.
+        if source == "idle" and self.model_type == "vidu":
+            return []
         pcm_chunk = np.asarray(pcm_chunk, dtype=np.int16)
         if pcm_chunk.size == 0:
             log.debug("Skipping empty %s generate: session=%s", source, self.session_id)
@@ -3340,7 +3351,17 @@ class FlashTalkRunner:
         # 若当前无口播任务（常见：用户在上一条说完后再发纯文本），不必 close/reconnect/init，
         # 否则会每次 speak 先跑 interrupt 白白耗 ~1s。
         ref = self._ref_image_path
-        if ref is not None and ref.exists():
+        if self.model_type == "vidu":
+            # Vidu keeps one live session for the whole conversation. A barge-in
+            # must send audio_interrupted (type=7); tearing the session down and
+            # re-creating it would end billing and force another handshake.
+            interrupt = getattr(self.flashtalk, "interrupt", None)
+            if callable(interrupt):
+                try:
+                    await interrupt()
+                except Exception:
+                    log.exception("Vidu interrupt failed: session=%s", self.session_id)
+        elif ref is not None and ref.exists():
             if was_busy:
                 try:
                     await self._reset_flashtalk_session(ref)

@@ -55,6 +55,7 @@ def test_models_route_lists_all_models_with_connection_status_without_omnirt(mon
         "fasterliveportrait",
         "flashhead",
         "quicktalk",
+        "vidu",
     ]
     statuses = {item["id"]: item for item in payload["statuses"]}
     assert statuses["mock"]["backend"] == "mock"
@@ -74,6 +75,9 @@ def test_models_route_lists_all_models_with_connection_status_without_omnirt(mon
     assert statuses["quicktalk"]["backend"] == "omnirt"
     assert statuses["quicktalk"]["connected"] is False
     assert statuses["quicktalk"]["reason"] == "not_configured"
+    assert statuses["vidu"]["backend"] == "vidu"
+    assert statuses["vidu"]["connected"] is False
+    assert statuses["vidu"]["reason"] == "not_configured"
 
 
 def test_models_route_exposes_valid_default_model_from_settings(monkeypatch) -> None:
