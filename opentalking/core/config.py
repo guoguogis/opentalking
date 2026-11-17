@@ -541,6 +541,7 @@ class Settings(BaseSettings):
 
     quicktalk_asset_root: str = ""
     quicktalk_model_root: str = ""
+    musetalk_backend: str = ""
     quicktalk_backend: str = ""
     quicktalk_model_backend: str = "auto"
     quicktalk_device: str = ""

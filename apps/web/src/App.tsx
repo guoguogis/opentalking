@@ -3044,6 +3044,7 @@ export default function App() {
             selectedSceneIdsByAvatar={selectedSceneIdsByAvatar}
             models={models}
             connectedModels={connectedModelIds}
+              modelStatuses={modelStatuses}
             onAvatarChange={handleAvatarChange}
             onAvatarUploaded={handleVideoCloneAvatarUploaded}
             onVoiceCloned={applyClonedVoice}

@@ -79,7 +79,14 @@ def collect_avatar_source_payload(avatars_root: Path, avatar_id: str) -> dict[st
 
 async def _connect_video_clone_client(settings: object) -> VideoCloneWSClient:
     client = VideoCloneWSClient.from_settings(settings)
-    await client.connect()
+    try:
+        await client.connect()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "视频克隆上游不可达：当前数字人服务未开放 /v1/avatar/video-clone/* 接口"
+            "（FasterLivePortrait runtime 未启用）。请改用 FlashHead / QuickTalk 等口播模型，"
+            f"或在服务端启用该运行时后重试。原始错误：{exc}"
+        ) from exc
     return client
 
 

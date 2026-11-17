@@ -1,0 +1,252 @@
+{
+  "exported_at": "2026-11-15T23:56:04+08:00",
+  "runtime_config": {
+    "llm": {
+      "provider": "openai_compatible",
+      "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.8-flash",
+      "api_key_set": "****"
+    },
+    "stt": {
+      "provider": "openai_compatible",
+      "enabled_providers": [
+        "dashscope",
+        "sensevoice",
+        "openai_compatible",
+        "xiaomi_mimo"
+      ],
+      "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen-audio-3.0-asr-flash",
+      "api_key_set": "****",
+      "service_url_set": true
+    },
+    "tts": {
+      "provider": "openai_compatible",
+      "enabled_providers": [
+        "edge",
+        "dashscope",
+        "openai_compatible",
+        "xiaomi_mimo",
+        "local_cosyvoice",
+        "indextts"
+      ],
+      "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen-audio-3.0-tts-plus",
+      "voice": "longanhuan_v3.6",
+      "api_key_set": "****",
+      "service_url_set": true
+    },
+    "mem0": {
+      "llm": {
+        "provider": "tokenplan",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen4-max-preview",
+        "api_key_set": "****"
+      },
+      "embedder": {
+        "provider": "openai",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "text-embedding-v4",
+        "api_key_set": "****"
+      }
+    }
+  },
+  "health": {
+    "status": "ok",
+    "llm_provider": "openai_compatible",
+    "llm_model": "qwen3.8-flash",
+    "llm_key_set": "****",
+    "tts_provider": "openai_compatible",
+    "tts_default_provider": "openai_compatible",
+    "tts_enabled_providers": [
+      "edge",
+      "dashscope",
+      "openai_compatible",
+      "xiaomi_mimo",
+      "local_cosyvoice",
+      "indextts"
+    ],
+    "tts_providers": {
+      "edge": {
+        "provider": "edge",
+        "model": "",
+        "model_dir": "",
+        "voice": "zh-CN-XiaoxiaoNeural",
+        "device": "",
+        "key_set": "",
+        "service_url_set": false
+      },
+      "dashscope": {
+        "provider": "dashscope",
+        "model": "qwen-audio-3.0-realtime-plus",
+        "model_dir": "",
+        "voice": "longanqian",
+        "device": "",
+        "key_set": "****",
+        "service_url_set": true
+      },
+      "openai_compatible": {
+        "provider": "openai_compatible",
+        "model": "qwen-audio-3.0-tts-plus",
+        "model_dir": "",
+        "voice": "longanhuan_v3.6",
+        "device": "",
+        "key_set": "****",
+        "service_url_set": true
+      },
+      "xiaomi_mimo": {
+        "provider": "xiaomi_mimo",
+        "profile": "xiaomi_mimo",
+        "model": "mimo-v2.5-tts",
+        "model_dir": "",
+        "voice": "mimo_default",
+        "device": "",
+        "key_set": "",
+        "service_url_set": false
+      },
+      "local_cosyvoice": {
+        "provider": "local_cosyvoice",
+        "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        "model_dir": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\FunAudioLLM__Fun-CosyVoice3-0.5B-2512",
+        "voice": "local-default",
+        "device": "auto",
+        "key_set": "",
+        "service_url": "",
+        "service_url_set": false,
+        "fp16": "auto",
+        "load_jit": false,
+        "load_trt": false,
+        "load_vllm": false,
+        "trt_concurrent": 1,
+        "token_hop_len": "",
+        "token_max_hop_len": "",
+        "stream_scale_factor": 0,
+        "flow_n_timesteps": 0,
+        "max_token_text_ratio": "****",
+        "min_token_text_ratio": "",
+        "mask_stop_tokens": "****"
+      },
+      "indextts": {
+        "provider": "indextts",
+        "model": "IndexTeam/IndexTTS-2",
+        "model_dir": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\IndexTeam__IndexTTS-2",
+        "voice": "local-default",
+        "device": "auto",
+        "key_set": "",
+        "service_url": "",
+        "service_url_set": false,
+        "cfg_path": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\IndexTeam__IndexTTS-2\\config.yaml",
+        "prompt_audio_set": false,
+        "w2v_bert_dir": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\facebook__w2v-bert-2.0",
+        "maskgct_dir": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\amphion__MaskGCT",
+        "campplus_dir": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\funasr__campplus",
+        "bigvgan_dir": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\nvidia__bigvgan_v2_22khz_80band_256x",
+        "backend": "local",
+        "resolved_provider": "local_indextts"
+      },
+      "mock": {
+        "provider": "mock",
+        "model": "mock",
+        "model_dir": "",
+        "voice": "mock",
+        "device": "",
+        "key_set": "",
+        "service_url_set": true
+      },
+      "local_f5_tts": {
+        "provider": "local_f5_tts",
+        "model": "SWivid/F5-TTS/F5TTS_v1_Base",
+        "model_dir": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\SWivid__F5-TTS__F5TTS_v1_Base",
+        "voice": "local-default",
+        "device": "auto",
+        "key_set": "",
+        "service_url": "",
+        "service_url_set": false,
+        "runtime_dir": "D:\\code\\GitHub\\opentalking\\model-repos\\F5-TTS",
+        "ckpt_file": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\SWivid__F5-TTS__F5TTS_v1_Base\\model_1250000.safetensors",
+        "vocoder_local_path": "",
+        "prompt_audio_set": false
+      },
+      "cosyvoice": {
+        "provider": "cosyvoice",
+        "model": "cosyvoice-v3-flash",
+        "model_dir": "",
+        "voice": "",
+        "device": "",
+        "key_set": "****",
+        "service_url_set": false
+      },
+      "sambert": {
+        "provider": "sambert",
+        "model": "sambert-zhichu-v1",
+        "model_dir": "",
+        "voice": "",
+        "device": "",
+        "key_set": "****",
+        "service_url_set": false
+      }
+    },
+    "tts_model": "qwen-audio-3.0-tts-plus",
+    "tts_key_set": "****",
+    "tts_service_url_set": true,
+    "tts_voice": "longanhuan_v3.6",
+    "tts_model_dir": "",
+    "tts_mode": "api",
+    "stt_provider": "openai_compatible",
+    "stt_default_provider": "openai_compatible",
+    "stt_enabled_providers": [
+      "dashscope",
+      "sensevoice",
+      "openai_compatible",
+      "xiaomi_mimo"
+    ],
+    "stt_providers": {
+      "dashscope": {
+        "provider": "dashscope",
+        "model": "paraformer-realtime-v2",
+        "model_dir": "",
+        "device": "auto",
+        "key_set": "****",
+        "service_url_set": false
+      },
+      "sensevoice": {
+        "provider": "sensevoice",
+        "model": "iic/SenseVoiceSmall",
+        "model_dir": "D:\\code\\GitHub\\opentalking\\models\\local-audio\\iic__SenseVoiceSmall",
+        "device": "auto",
+        "key_set": "",
+        "service_url_set": false
+      },
+      "openai_compatible": {
+        "provider": "openai_compatible",
+        "model": "qwen-audio-3.0-asr-flash",
+        "model_dir": "",
+        "device": "auto",
+        "key_set": "****",
+        "service_url_set": true
+      },
+      "xiaomi_mimo": {
+        "provider": "xiaomi_mimo",
+        "model": "mimo-v2.5-asr",
+        "model_dir": "",
+        "device": "auto",
+        "key_set": "",
+        "service_url_set": false,
+        "profile": "xiaomi_mimo"
+      }
+    },
+    "stt_model": "qwen-audio-3.0-asr-flash",
+    "stt_model_dir": "",
+    "stt_key_set": "****",
+    "stt_device": "auto",
+    "default_model": "musetalk",
+    "quicktalk_backend": "",
+    "quicktalk_device": "cpu",
+    "quicktalk_asset_root": "D:\\code\\GitHub\\opentalking\\models\\quicktalk",
+    "ignored_legacy_env": [
+      "DASHSCOPE_API_KEY",
+      "OPENTALKING_STT_MODEL",
+      "OPENTALKING_TTS_PROVIDER"
+    ]
+  }
+}

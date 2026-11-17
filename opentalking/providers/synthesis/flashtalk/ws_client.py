@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from urllib.parse import urlsplit
 import concurrent.futures
 import json
 import logging
@@ -61,6 +62,19 @@ def _decode_jpeg(jpeg_bytes: bytes) -> np.ndarray:
     if bgr is None:
         raise RuntimeError("JPEG decoding failed")
     return bgr
+
+
+def _remote_gateway_target(url: str) -> bool:
+    """Whether init must omit local absolute paths (remote gateway cannot read them).
+
+    Remote OmniRT gateways reject `template_video` / `ref_frame_dir` / ... with
+    "template_video is outside allowed frame roots". Enable with
+    ``OPENTALKING_AUDIO2VIDEO_STRIP_LOCAL_PATHS=1`` (the default keeps the legacy
+    behaviour of sending paths, which local OmniRT setups rely on).
+    """
+    del url  # 保留参数以便调用处无需改动
+    flag = os.environ.get("OPENTALKING_AUDIO2VIDEO_STRIP_LOCAL_PATHS", "").strip().lower()
+    return flag in {"1", "true", "yes", "on"}
 
 
 class FlashTalkWSClient:
@@ -165,22 +179,35 @@ class FlashTalkWSClient:
             payload["mouth_metadata"] = mouth_metadata
         if reference_mode:
             payload["reference_mode"] = reference_mode
-        if ref_frame_dir is not None:
+        if ref_frame_dir is not None and not _remote_gateway_target(
+            getattr(self, "_ws_url", "") or getattr(self, "url", "") or getattr(self, "_url", "")
+        ):
             payload["ref_frame_dir"] = str(ref_frame_dir)
-        if ref_frame_metadata_path is not None:
+        if ref_frame_metadata_path is not None and not _remote_gateway_target(
+            getattr(self, "_ws_url", "") or getattr(self, "url", "") or getattr(self, "_url", "")
+        ):
             payload["ref_frame_metadata_path"] = str(ref_frame_metadata_path)
-        if prepared_cache_dir is not None:
+        if prepared_cache_dir is not None and not _remote_gateway_target(
+            getattr(self, "_ws_url", "") or getattr(self, "url", "") or getattr(self, "_url", "")
+        ):
             payload["prepared_cache_dir"] = str(prepared_cache_dir)
         if preprocessed is not None:
             payload["preprocessed"] = bool(preprocessed)
-        if template_mode:
-            payload["template_mode"] = template_mode
-        if template_video is not None:
-            payload["template_video"] = str(template_video)
-        if template_frame_dir is not None:
-            payload["template_frame_dir"] = str(template_frame_dir)
-        if quicktalk_face_cache is not None:
-            payload["quicktalk_face_cache"] = str(quicktalk_face_cache)
+        remote_target = _remote_gateway_target(
+            getattr(self, "_ws_url", "") or getattr(self, "url", "") or getattr(self, "_url", "")
+        )
+        if remote_target:
+            # 远端网关读不到本机路径，跳过所有本地路径字段（见 _remote_gateway_target）。
+            pass
+        else:
+            if template_mode:
+                payload["template_mode"] = template_mode
+            if template_video is not None:
+                payload["template_video"] = str(template_video)
+            if template_frame_dir is not None:
+                payload["template_frame_dir"] = str(template_frame_dir)
+            if quicktalk_face_cache is not None:
+                payload["quicktalk_face_cache"] = str(quicktalk_face_cache)
         if video_config:
             for key in (
                 "width",

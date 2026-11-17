@@ -425,7 +425,7 @@ def test_omnirt_indextts_streams_l16_without_full_body_buffer(monkeypatch):
             return False
 
     class FakeClient:
-        def __init__(self, *, timeout):
+        def __init__(self, *, timeout, **kwargs):
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -1851,7 +1851,7 @@ async def test_local_tts_service_wav_response_uses_content_type_decoder(
             return False
 
     class FakeClient:
-        def __init__(self, timeout):
+        def __init__(self, timeout, **kwargs):
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -1917,7 +1917,7 @@ async def test_local_cosyvoice_service_pcm_response_streams_without_full_body(mo
             return False
 
     class FakeClient:
-        def __init__(self, timeout):
+        def __init__(self, timeout, **kwargs):
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -1974,7 +1974,7 @@ async def test_local_cosyvoice_service_payload_includes_system_voice_mode(tmp_pa
             return False
 
     class FakeClient:
-        def __init__(self, timeout):
+        def __init__(self, timeout, **kwargs):
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -2029,7 +2029,7 @@ async def test_local_cosyvoice_service_payload_includes_local_voice_prompt(tmp_p
             return False
 
     class FakeClient:
-        def __init__(self, timeout):
+        def __init__(self, timeout, **kwargs):
             self.timeout = timeout
 
         async def __aenter__(self):

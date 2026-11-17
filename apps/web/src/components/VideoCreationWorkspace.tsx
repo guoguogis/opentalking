@@ -28,6 +28,7 @@ import {
 } from "../lib/api";
 import type { VoiceCloneApplication } from "../lib/voiceCloneApply";
 import { modelLabel } from "../lib/modelLabels";
+import type { ModelStatus } from "../lib/modelStatus";
 import {
   videoCreationCompositionForAvatar,
   videoCreationStateForAvatar,
@@ -72,6 +73,8 @@ type VideoCreationWorkspaceProps = {
    * registered list regardless of connectivity, so availability gates must use
    * this instead (e.g. reference video hard-requires FlashTalk). */
   connectedModels?: string[];
+  /** Per-model runtime status, used to label unavailable models in the picker. */
+  modelStatuses?: ModelStatus[];
   onAvatarChange: (id: string) => void;
   onAvatarUploaded: (avatar: AvatarSummary) => void;
   onVoiceCloned: (application: VoiceCloneApplication) => void | Promise<void>;
@@ -464,6 +467,7 @@ export function VideoCreationWorkspace({
   selectedSceneIdsByAvatar = {},
   models,
   connectedModels = [],
+  modelStatuses = [],
   onAvatarChange,
   onAvatarUploaded,
   onVoiceCloned,
@@ -528,7 +532,30 @@ export function VideoCreationWorkspace({
 
   const hlsStreamEnded = shouldEndHlsPreview(videoJobStatus?.status, rtmpsJobStatus?.status);
 
-  const availableVideoModels = useMemo(() => VIDEO_CREATION_MODELS.filter((item) => models.includes(item)), [models]);
+  const videoModelAvailability = useMemo(() => {
+    const statusById = new Map(modelStatuses.map((item) => [item.id, item]));
+    const connected = new Set(connectedModels);
+    return new Map(
+      VIDEO_CREATION_MODELS.map((item) => {
+        const status = statusById.get(item);
+        // 探活结果缺失时退回旧的 /models 名单，避免把全部模型误标为不可用。
+        const available = connected.size > 0 ? connected.has(item) : models.includes(item);
+        const reason = (status?.reason ?? "").trim();
+        let label = "";
+        if (!available) {
+          if (reason === "omnirt_unavailable") label = "（远端未启用）";
+          else if (reason === "local_adapter_missing") label = "（未安装）";
+          else if (reason.startsWith("direct_ws")) label = "（连接失败）";
+          else label = "（不可用）";
+        }
+        return [item, { available, label, reason }] as const;
+      }),
+    );
+  }, [connectedModels, modelStatuses, models]);
+  const availableVideoModels = useMemo(
+    () => VIDEO_CREATION_MODELS.filter((item) => videoModelAvailability.get(item)?.available ?? false),
+    [videoModelAvailability],
+  );
   const regularEffectiveModel = availableVideoModels.includes(model)
     ? model
     : availableVideoModels[0] ?? model;
@@ -1232,7 +1259,14 @@ export function VideoCreationWorkspace({
                 生成模型
                 <select value={effectiveModel} onChange={(event) => setModel(event.target.value)} disabled={videoCreationState.modelLocked} className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-100">
                   {videoCreationModelOptions.map((item) => (
-                    <option key={item} value={item} disabled={!videoCreationState.modelLocked && !models.includes(item)}>{modelLabel(item)}{videoCreationState.modelLocked || models.includes(item) ? "" : "（不可用）"}</option>
+                    <option
+                      key={item}
+                      value={item}
+                      disabled={!videoCreationState.modelLocked && !(videoModelAvailability.get(item)?.available ?? false)}
+                    >
+                      {modelLabel(item)}
+                      {videoCreationState.modelLocked ? "" : (videoModelAvailability.get(item)?.label ?? "")}
+                    </option>
                   ))}
                 </select>
               </label>

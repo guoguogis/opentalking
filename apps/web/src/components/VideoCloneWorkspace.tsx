@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AvatarSummary, ExportVideoItem } from "../lib/api";
-import { ApiError, apiPostForm, buildApiUrl, buildWsUrl, uploadExportVideo } from "../lib/api";
+import { ApiError, apiGet, apiPostForm, buildApiUrl, buildWsUrl, uploadExportVideo } from "../lib/api";
 import { modelLabel } from "../lib/modelLabels";
 import type { FasterLivePortraitConfig } from "./SettingsPanel";
 
@@ -457,6 +457,22 @@ export function VideoCloneWorkspace({
       }
 
       setStatus("connecting");
+      setStatusText("检查视频克隆服务");
+      try {
+        const health = await apiGet<{ connected?: boolean; reason?: string }>("/video-clone/status");
+        if (health && health.connected === false) {
+          onNotify?.(
+            "视频克隆需要 FasterLivePortrait 运行时，当前数字人服务未启用（runtime_not_enabled）。"
+              + "请改用 FlashHead / QuickTalk 等口播模型，或先在服务端启用该运行时。",
+            "error",
+          );
+          setStatus("idle");
+          setStatusText("");
+          return;
+        }
+      } catch {
+        // 探活失败不阻断，继续尝试直连
+      }
       setStatusText("连接视频克隆服务");
       const ws = new WebSocket(buildWsUrl("/video-clone/fasterliveportrait/ws"));
       ws.binaryType = "arraybuffer";

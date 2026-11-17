@@ -75,6 +75,15 @@ def _parse_service_url_map(raw: str) -> dict[str, str]:
     return out
 
 
+def _service_auth_headers() -> dict[str, str]:
+    """Optional bearer auth for remote CosyVoice services (e.g. behind a gateway)."""
+    key = (
+        os.environ.get("OPENTALKING_TTS_LOCAL_COSYVOICE_API_KEY", "").strip()
+        or _settings_value("tts_local_cosyvoice_api_key", "")
+    )
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 def _service_url_map() -> dict[str, str]:
     raw = (
         os.environ.get("OPENTALKING_TTS_LOCAL_COSYVOICE_SERVICE_URLS", "").strip()
@@ -369,7 +378,7 @@ class LocalCosyVoiceTTSAdapter:
         elif not _is_service_default_voice(effective_voice):
             raise LocalCosyVoiceInputError(_missing_local_voice_message(effective_voice))
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, headers=_service_auth_headers()) as client:
                 async with client.stream("POST", self.service_url, json=payload) as resp:
                     resp.raise_for_status()
                     input_format = _audio_format_from_content_type(resp.headers.get("content-type"))

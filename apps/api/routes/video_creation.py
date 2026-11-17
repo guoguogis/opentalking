@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 
 from opentalking.avatar.fasterliveportrait_config import normalize_fasterliveportrait_runtime_config
+from opentalking.providers.synthesis.availability import resolve_model_statuses
 from opentalking.providers.tts.indextts_config import normalize_indextts_config
 from opentalking.providers.tts.providers import normalize_tts_provider
 from opentalking.avatar.light2d import Light2DContractError
@@ -17,6 +18,38 @@ from opentalking.video_creation_jobs import VideoCreationJobManager
 router = APIRouter(prefix="/video-creation", tags=["video-creation"])
 
 _AUDIO_SOURCES = {"upload", "tts_text", "voice_clone", "reference_video", "duo_dialog"}
+
+
+async def _ensure_model_available(settings: Any, model: str) -> None:
+    """Fail fast with an actionable message when a remote model is not served.
+
+    Without this guard an unavailable remote runtime only surfaces later as the
+    opaque "video creation produced zero frames".
+    """
+    try:
+        statuses = await resolve_model_statuses(settings)
+    except Exception:  # 探活失败不应阻断创作
+        return
+    entry = next((item for item in statuses if item.id == model), None)
+    if entry is None or entry.connected:
+        return
+    if entry.backend not in {"omnirt", "direct_ws"}:
+        return
+    reason = str(entry.reason or "").strip()
+    if reason == "omnirt_unavailable":
+        hint = "远端 OmniRT 网关未启用该模型（runtime_not_enabled）"
+    elif reason.startswith("direct_ws"):
+        hint = "远端 WebSocket 端点不可达或鉴权失败"
+    else:
+        hint = f"原因：{reason or '未知'}"
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"模型 {model} 当前不可用：{hint}。"
+            "可改用 flashtalk / musetalk / quicktalk / flashhead，"
+            "或先在数字人服务端启用该模型后重试。"
+        ),
+    )
 _INDEXTTS_PROVIDERS = {"indextts", "local_indextts", "omnirt_indextts"}
 
 
@@ -142,6 +175,7 @@ async def create_video_creation_job(
     if source not in _AUDIO_SOURCES:
         raise HTTPException(status_code=400, detail="audio_source must be upload, tts_text, voice_clone, duo_dialog, or reference_video")
     settings = request.app.state.settings
+    await _ensure_model_available(settings, model)
     flp_config = _parse_fasterliveportrait_config(model, fasterliveportrait_config)
     video_composition_config = _parse_video_composition_config(composition_config)
     try:

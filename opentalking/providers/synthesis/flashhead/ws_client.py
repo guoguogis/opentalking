@@ -45,6 +45,24 @@ def _default_ws_url() -> str:
     )
 
 
+def _auth_headers(url: str = "") -> dict[str, str]:
+    """Bearer auth for FlashHead endpoints behind a gateway.
+
+    A remote gateway (e.g. ``wss://host/ws/flashhead``) answers 401 without a key.
+    Falls back to ``OPENTALKING_OMNIRT_API_KEY`` so a single gateway key covers
+    both the audio2video and FlashHead channels.
+    """
+    key = (
+        os.environ.get("OPENTALKING_FLASHHEAD_API_KEY", "").strip()
+        or os.environ.get("OPENTALKING_OMNIRT_API_KEY", "").strip()
+    )
+    if not key:
+        return {}
+    if "api_key=" in str(url or ""):
+        return {}  # 已经用查询参数传了，避免重复
+    return {"Authorization": f"Bearer {key}"}
+
+
 def _decode_jpeg(jpeg_bytes: bytes) -> np.ndarray:
     import cv2
 
@@ -85,6 +103,7 @@ class FlashHeadWSClient:
     async def connect(self) -> None:
         self._ws = await ws_connect(
             self._ws_url,
+            additional_headers=_auth_headers(self._ws_url),
             max_size=50 * 1024 * 1024,
             open_timeout=30,
             close_timeout=10,
