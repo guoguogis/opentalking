@@ -83,7 +83,18 @@ def test_webrtc_ice_config_defaults_to_all_without_turn(monkeypatch: pytest.Monk
     payload = sessions_routes.get_webrtc_ice_config_payload()
 
     assert payload["iceTransportPolicy"] == "all"
-    assert payload["iceServers"] == [{"urls": "stun:stun.l.google.com:19302"}]
+    # No external STUN by default: an unreachable one stalls ICE gathering and
+    # delays the first video frame by ~15s on restricted networks.
+    assert payload["iceServers"] == []
+
+
+def test_webrtc_ice_config_uses_configured_stun_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENTALKING_WEBRTC_ICE_SERVERS", raising=False)
+    monkeypatch.setenv("OPENTALKING_WEBRTC_STUN_URLS", "stun:stun.intranet.local:3478")
+
+    payload = sessions_routes.get_webrtc_ice_config_payload()
+
+    assert payload["iceServers"] == [{"urls": "stun:stun.intranet.local:3478"}]
 
 
 def test_webrtc_ice_config_defaults_to_relay_when_turn_present(monkeypatch: pytest.MonkeyPatch) -> None:

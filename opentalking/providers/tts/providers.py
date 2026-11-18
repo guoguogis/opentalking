@@ -15,6 +15,9 @@ BAILIAN_TTS_PROVIDERS = (
     | COSYVOICE_TTS_PROVIDERS
     | SAMBERT_TTS_PROVIDERS
 )
+# NOTE: previously written as `(*TOKENPLAN_REALTIME_TTS_PROVIDERS, <union>)`,
+# which produced a 2-element tuple ("tokenplan_realtime", <frozenset>) and made
+# every other provider (edge/dashscope/mock/...) fail the membership check.
 SUPPORTED_TTS_PROVIDERS = (
     TOKENPLAN_REALTIME_TTS_PROVIDERS
     | CORE_TTS_PROVIDERS

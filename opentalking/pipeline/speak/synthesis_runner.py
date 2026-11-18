@@ -1506,6 +1506,21 @@ class FlashTalkRunner:
             log.exception("Failed to save idle cache: %s", cache_path)
 
     async def _reset_flashtalk_session(self, ref_image_path: Path) -> None:
+        # Vidu renders in the cloud and keeps exactly one live per session: when
+        # only our control channel died, reattach to that live instead of
+        # creating a second one (which would double the bill and the concurrency
+        # slot for the same conversation).
+        reconnect = getattr(self.flashtalk, "reconnect_stream", None)
+        if self.model_type == "vidu" and callable(reconnect):
+            try:
+                await reconnect()
+                return
+            except Exception:
+                log.warning(
+                    "Vidu reattach failed; recreating the live for session=%s",
+                    self.session_id,
+                    exc_info=True,
+                )
         await self.flashtalk.close()
         await self.flashtalk.connect()
         await self._init_flashtalk_session(ref_image_path)
@@ -2071,6 +2086,9 @@ class FlashTalkRunner:
             )
             self._speech_started = True
 
+            # type=9: what the user just said. Vidu uses it to pick matching
+            # gestures/expressions while it renders the reply.
+            await self._send_vidu_transcription(text, user=True)
             memory_prompt = await self._memory.retrieve_prompt(text) if self._memory else ""
             llm_user_text = (
                 f"{memory_prompt}\n\nCurrent user message:\n{text}"
@@ -2531,6 +2549,10 @@ class FlashTalkRunner:
                     if self._interrupt.is_set():
                         break
                     await self._wait_media_backpressure()
+                    # Vidu aligns visemes against type=10, so the sentence that
+                    # this chunk speaks goes out right before the audio.
+                    if sub_tag:
+                        await self._send_vidu_transcription(sub_tag)
                     g0 = time.perf_counter()
                     if "first_model_request_ms" not in timing:
                         timing["first_model_request_ms"] = (
@@ -3068,6 +3090,29 @@ class FlashTalkRunner:
         """Send one audio chunk to FlashTalk server, push resulting frames to WebRTC."""
         frames = await self._generate_flashtalk_frames(pcm_chunk)
         await self._queue_av_chunk(pcm_chunk, frames)
+
+    async def _send_vidu_transcription(self, text: str, *, user: bool = False) -> None:
+        """Forward the utterance text to Vidu as type=9/type=10.
+
+        The component版 integration expects both streams: raw PCM *and* the
+        transcript (type=9 for what the user said, type=10 for the reply the
+        avatar is speaking). Only the PCM was sent before, which leaves the
+        renderer without word alignment for the visemes.
+        """
+        sender = getattr(self.flashtalk, "send_transcription", None)
+        if sender is None or self.model_type != "vidu":
+            return
+        clean = (text or "").strip()
+        if not clean:
+            return
+        key = ("user" if user else "avatar", clean)
+        if key == getattr(self, "_vidu_last_transcription", None):
+            return
+        self._vidu_last_transcription = key
+        try:
+            await sender(clean, user=user)
+        except Exception as error:  # noqa: BLE001 - never break speech for a hint
+            log.debug("Vidu transcription send failed: session=%s err=%s", self.session_id, error)
 
     async def _generate_flashtalk_frames(
         self,

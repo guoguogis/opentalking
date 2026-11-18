@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenTalking RTC 自检</title>
+<style>
+  body { font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #666; margin-bottom: 16px; }
+  table { border-collapse: collapse; width: 100%; max-width: 860px; }
+  td { border-bottom: 1px solid #eee; padding: 6px 8px; vertical-align: top; }
+  td:first-child { width: 190px; color: #444; }
+  .ok { color: #067d3f; font-weight: 600; }
+  .bad { color: #b42318; font-weight: 600; }
+  .warn { color: #b54708; font-weight: 600; }
+  code { background: #f5f5f5; padding: 1px 4px; border-radius: 3px; word-break: break-all; }
+  #done { margin-top: 16px; padding: 10px 12px; background: #f0f7ff; border-left: 3px solid #1c7ed6; display: none; }
+</style>
+</head>
+<body>
+<h1>OpenTalking RTC 自检</h1>
+<div class="sub">用来判断这台电脑能不能建立 WebRTC 媒体通道（STUN/UDP 是否可达、浏览器支持哪些视频编码）。结果会自动上报，无需截图。</div>
+<table id="out"></table>
+<div id="done">自检完成，结果已上报。请回到对话里说一声「自检完成」。</div>
+<script>
+(function () {
+  const rows = [];
+  const put = (k, v, cls) => {
+    rows.push([k, v, cls || ""]);
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td>" + k + "</td><td class='" + (cls || "") + "'>" + v + "</td>";
+    document.getElementById("out").appendChild(tr);
+  };
+
+  const UA = navigator.userAgent;
+  const report = { event: "selftest.stun", ua: UA, href: location.href, at: new Date().toISOString() };
+
+  put("浏览器", UA.replace(/^.*?(Chrome\/[\d.]+).*$/, "$1") + (UA.includes("Headless") ? "（无头）" : ""));
+  put("页面地址", location.href);
+
+  // 1) H.264 能力：云端数字人推的就是 H.264，浏览器不支持就一定黑屏。
+  try {
+    const caps = RTCRtpReceiver.getCapabilities("video");
+    const codecs = (caps && caps.codecs ? caps.codecs : []).map(c => (c.mimeType || "") + "/" + (c.clockRate || ""));
+    const has = (re) => codecs.some(c => re.test(c));
+    report.codecs = codecs;
+    report.h264 = has(/H264/i);
+    put("WebRTC H.264", has(/H264/i) ? "支持 ✔" : "不支持 ✘", has(/H264/i) ? "ok" : "bad");
+    put("WebRTC H.265", has(/H265|HEVC/i) ? "支持" : "不支持", "");
+    put("WebRTC VP8", has(/VP8/i) ? "支持" : "不支持", "");
+  } catch (e) {
+    put("编码能力", "读取失败: " + e.message, "warn");
+  }
+
+  // 2) STUN 连通性：能拿到 srflx 候选 = UDP 能出网到公网。
+  const servers = [
+    { urls: "stun:stun.qq.com:3478" },
+    { urls: "stun:stun.miwifi.com:3478" },
+    { urls: "stun:stun.chat.bilibili.com:3478" },
+  ];
+  report.stun = [];
+
+  const probe = (server, timeoutMs) => new Promise((resolve) => {
+    const result = { server: server.urls, host: [], srflx: [], relay: [], ms: -1, error: "" };
+    const t0 = performance.now();
+    let pc;
+    let finished = false;
+    const finish = (err) => {
+      if (finished) return;
+      finished = true;
+      result.ms = Math.round(performance.now() - t0);
+      if (err) result.error = String(err);
+      try { pc && pc.close(); } catch (_) {}
+      resolve(result);
+    };
+    try {
+      pc = new RTCPeerConnection({ iceServers: [server], iceCandidatePoolSize: 0 });
+    } catch (e) {
+      finish(e && e.message);
+      return;
+    }
+    pc.createDataChannel("probe");
+    pc.onicecandidate = (ev) => {
+      const c = ev.candidate;
+      if (!c || !c.candidate) return;
+      const cand = c.candidate;
+      if (cand.includes(" typ host")) result.host.push(cand.split(" ")[4] || "host");
+      else if (cand.includes(" typ srflx")) result.srflx.push(cand.split(" ")[4] || "srflx");
+      else if (cand.includes(" typ relay")) result.relay.push(cand.split(" ")[4] || "relay");
+    };
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState === "complete") finish("");
+    };
+    pc.createOffer().then(o => pc.setLocalDescription(o)).catch(e => finish(e && e.message));
+    setTimeout(() => finish(""), timeoutMs);
+  });
+
+  (async () => {
+    for (const s of servers) {
+      const r = await probe(s, 5000);
+      report.stun.push(r);
+      const label = "STUN " + s.urls.replace("stun:", "").replace(":3478", "");
+      if (r.srflx.length) {
+        put(label, "可出网 UDP ✔ 公网地址=" + r.srflx.join(",") + "（" + r.ms + "ms）", "ok");
+      } else if (r.host.length) {
+        put(label, "只有内网候选、拿不到公网地址 ✘（UDP 被拦或 STUN 不可达，" + r.ms + "ms）", "bad");
+      } else {
+        put(label, "无任何候选 ✘ " + (r.error || "") + "（" + r.ms + "ms）", "bad");
+      }
+    }
+
+    // 3) 到我们自己的 API 的连通性（对照组，这条一定通）
+    try {
+      const t0 = performance.now();
+      const resp = await fetch("/opentalking/api/models", { cache: "no-store" });
+      report.apiMs = Math.round(performance.now() - t0);
+      put("本服务 API", (resp.ok ? "正常 ✔ " : "异常 ") + report.apiMs + "ms", resp.ok ? "ok" : "bad");
+    } catch (e) {
+      put("本服务 API", "失败: " + e.message, "bad");
+    }
+
+    // 4) 原始候选列表，便于人工判断
+    report.raw = rows.map(r => r[0] + "=" + String(r[1]).replace(/<[^>]+>/g, ""));
+    try {
+      await fetch("/opentalking/api/client-diag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(report),
+        keepalive: true,
+      });
+      document.getElementById("done").style.display = "block";
+    } catch (e) {
+      put("上报", "失败: " + e.message, "bad");
+    }
+  })();
+})();
+</script>
+</body>
+</html>

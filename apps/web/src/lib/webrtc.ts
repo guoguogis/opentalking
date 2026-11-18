@@ -1,6 +1,13 @@
 import { apiGet, apiPost } from "./api";
 
-const DEFAULT_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+/**
+ * No STUN by default: browser and worker share the intranet, so host candidates
+ * connect in milliseconds. An unreachable STUN (the old default pointed at
+ * stun.l.google.com) makes ICE gathering wait for its request timeouts, which
+ * cost ~15s before the first frame in restricted networks. The server hands the
+ * real list out via /sessions/webrtc/ice-config when one is configured.
+ */
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [];
 
 type WebRtcIceConfigResponse = {
   iceServers?: RTCIceServer[];
@@ -11,16 +18,16 @@ async function loadIceConfig(): Promise<WebRtcIceConfigResponse> {
   try {
     const response = await apiGet<WebRtcIceConfigResponse>("/sessions/webrtc/ice-config");
     return {
-      iceServers: Array.isArray(response.iceServers) && response.iceServers.length
-        ? response.iceServers
-        : DEFAULT_ICE_SERVERS,
+      // An empty array is a valid answer (host candidates only) — do not
+      // replace it with a default, that is exactly what made startup slow.
+      iceServers: Array.isArray(response.iceServers) ? response.iceServers : DEFAULT_ICE_SERVERS,
       iceTransportPolicy:
         response.iceTransportPolicy === "relay" || response.iceTransportPolicy === "all"
           ? response.iceTransportPolicy
           : undefined,
     };
   } catch (error) {
-    console.warn("Failed to load WebRTC ICE config, using default STUN", error);
+    console.warn("Failed to load WebRTC ICE config, using host candidates only", error);
     return { iceServers: DEFAULT_ICE_SERVERS };
   }
 }

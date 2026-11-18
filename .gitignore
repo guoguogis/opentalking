@@ -91,3 +91,9 @@ site/
 # 明文配置导出（含密钥，禁止提交）
 ai-config-export.plain.json
 ai-config-export.plain.md
+
+# Local deployment scratch (contains credentials, probe dumps, saved Chrome profiles)
+.deploy/
+.tmpbuild/
+.tmpchrome-*/
+rtc_probe_result.json

@@ -19,7 +19,7 @@ from opentalking.core.redis_keys import (
     knowledge_index_job_key,
     knowledge_prepare_job_key,
 )
-from opentalking.core.session_store import get_session_record, set_session_state
+from opentalking.core.session_store import get_session_record, session_key, set_session_state
 from opentalking.agent.context_builder import AgentSessionConfig
 from opentalking.runtime.bus import publish_event
 from opentalking.pipeline.session.runner import SessionRunner
@@ -34,6 +34,113 @@ from opentalking.providers.synthesis.flashtalk.ws_client import FlashTalkWSClien
 from opentalking.providers.memory.runtime import normalize_memory_scope
 
 log = logging.getLogger(__name__)
+
+# A session nobody touches still costs money on cloud-rendered backends (Vidu
+# bills per rendered second), so remember the last real interaction per session
+# and let the idle guard hang up instead of letting a forgotten tab bill on.
+_SESSION_ACTIVITY: dict[str, float] = {}
+_IDLE_WARNED: set[str] = set()
+# The frontend already renders a countdown for "session.expiring" (used by the
+# FlashTalk max-duration cap), so the idle guard reuses those two events: warn
+# 30s ahead, then emit "session.expired" once the session is actually closed.
+_IDLE_WARNING_SEC = 30.0
+_ACTIVITY_COMMANDS = frozenset(
+    {
+        "init",
+        "speak",
+        "speak_flashtalk_audio",
+        "speak_audio",
+        "interrupt",
+        "transcribe",
+        "webrtc_offer",
+    }
+)
+
+
+def _session_idle_close_seconds() -> float:
+    raw = (os.environ.get("OPENTALKING_SESSION_IDLE_CLOSE_SEC") or "").strip()
+    if not raw:
+        return 180.0
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("Invalid OPENTALKING_SESSION_IDLE_CLOSE_SEC=%r, using 180", raw)
+        return 180.0
+    return max(0.0, value)
+
+
+def _mark_session_activity(sid: str) -> None:
+    if sid:
+        _SESSION_ACTIVITY[sid] = time.monotonic()
+
+
+async def _session_idle_guard(r: Any, runners: dict[str, SessionRunner]) -> None:
+    """Hang up sessions that nobody is using.
+
+    Cloud backends (Vidu) bill per rendered second, so a tab left open -- or a
+    client that vanished without a clean WebRTC teardown -- keeps burning
+    credits until the provider-side idle timeout fires (2 hours by default).
+    Close the session as soon as it has been idle for
+    ``OPENTALKING_SESSION_IDLE_CLOSE_SEC`` seconds (0 disables the guard).
+    """
+    idle_sec = _session_idle_close_seconds()
+    if idle_sec <= 0:
+        log.info("Session idle guard disabled (OPENTALKING_SESSION_IDLE_CLOSE_SEC=0)")
+        return
+    log.info("Session idle guard active: hang up after %.0fs without interaction", idle_sec)
+    while True:
+        try:
+            await asyncio.sleep(5.0)
+            now = time.monotonic()
+            for sid, runner in list(runners.items()):
+                last = _SESSION_ACTIVITY.get(sid)
+                if last is None:
+                    # First sighting: start the clock rather than firing at once.
+                    _SESSION_ACTIVITY[sid] = now
+                    continue
+                idle = now - last
+                if idle < idle_sec:
+                    remaining = idle_sec - idle
+                    if remaining <= _IDLE_WARNING_SEC and sid not in _IDLE_WARNED:
+                        _IDLE_WARNED.add(sid)
+                        log.info(
+                            "Idle guard: warning session %s (%ds left before hangup)",
+                            sid,
+                            int(remaining),
+                        )
+                        with contextlib.suppress(Exception):
+                            await publish_event(
+                                r,
+                                sid,
+                                "session.expiring",
+                                {"session_id": sid, "remaining_sec": int(remaining)},
+                            )
+                    continue
+                log.warning(
+                    "Idle guard: hanging up session %s after %.0fs without interaction",
+                    sid,
+                    idle,
+                )
+                _SESSION_ACTIVITY.pop(sid, None)
+                _IDLE_WARNED.discard(sid)
+                runners.pop(sid, None)
+                with contextlib.suppress(Exception):
+                    await publish_event(
+                        r,
+                        sid,
+                        "session.expired",
+                        {"session_id": sid, "message": "idle_timeout", "idle_sec": int(idle)},
+                    )
+                try:
+                    await runner.close()
+                except Exception:  # noqa: BLE001
+                    log.exception("Idle guard: close failed for session %s", sid)
+                with contextlib.suppress(Exception):
+                    await set_session_state(r, sid, "closed")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("session idle guard error")
 
 
 async def _finish_speak_receipt(r: Any, sid: str, command_id: str, task: asyncio.Task[Any]) -> None:
@@ -427,9 +534,13 @@ async def _do_init(
             "position": 0,
             "message": "worker_ready",
         })
-    except Exception:
+    except Exception as exc:
         runners.pop(sid, None)
         await set_session_state(r, sid, "error")
+        # Keep the reason so POST /sessions can return something actionable
+        # (e.g. Vidu "CreditInsufficient") instead of a generic timeout.
+        with contextlib.suppress(Exception):
+            await r.hset(session_key(sid), "error", str(exc)[:500])
         raise
 
 
@@ -879,6 +990,8 @@ async def handle_worker_task(
         return
     if not sid or not cmd:
         return
+    if cmd in _ACTIVITY_COMMANDS:
+        _mark_session_activity(sid)
     if cmd == "init":
         if sid in runners:
             return
@@ -1069,6 +1182,7 @@ async def handle_worker_task(
     elif cmd == "close":
         await runner.close()
         runners.pop(sid, None)
+        _SESSION_ACTIVITY.pop(sid, None)
 
 
 async def _recover_knowledge_index_jobs(r: Any) -> None:
@@ -1131,6 +1245,7 @@ async def consume_task_queue(
     runners: dict[str, SessionRunner],
 ) -> None:
     recovery_task = asyncio.create_task(_recover_knowledge_index_jobs(r))
+    idle_guard_task = asyncio.create_task(_session_idle_guard(r, runners))
     try:
         while True:
             try:
@@ -1148,3 +1263,6 @@ async def consume_task_queue(
         recovery_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await recovery_task
+        idle_guard_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await idle_guard_task

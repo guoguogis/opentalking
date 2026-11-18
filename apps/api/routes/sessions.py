@@ -292,6 +292,26 @@ def _update_runner_agent_knowledge_bases(runner: object, knowledge_base_ids: lis
 log = logging.getLogger(__name__)
 
 
+def _describe_init_failure(raw: str) -> str:
+    """Turn a worker init error into something the user can act on."""
+    message = (raw or "").strip()
+    if not message:
+        return "Session worker did not become ready in time."
+    lowered = message.lower()
+    if "vidulivebusy" in lowered or "并发已满" in message or "并发已满".lower() in lowered:
+        # One OpenTalking session == one Vidu live; the account only allows a
+        # limited number at a time, so the new session waited and then gave up.
+        return "云端数字人正忙：一个账号同一时刻只允许有限路 Vidu 会话，请先结束当前对话后再开始新的会话。"
+    if "creditinsufficient" in lowered or "insufficient credits" in lowered:
+        # 官方文档：按秒计费 1 积分/秒，账户余额低于 45 积分无法发起任务。
+        return "Vidu 账号积分不足（CreditInsufficient）：按 1 积分/秒计费，余额低于 45 积分无法发起会话，请充值后重试。"
+    if "concurrency limit" in lowered or "toomanyrequests" in lowered:
+        return "Vidu 并发已满（live concurrency limit reached），请先结束其他会话再试。"
+    if "401" in lowered or "unauthorized" in lowered or "invalid api key" in lowered:
+        return f"云端鉴权失败：{message[:200]}"
+    return f"Session init failed: {message[:300]}"
+
+
 async def _stream_worker_flashtalk_recording(
     *,
     worker_url: str,
@@ -745,10 +765,22 @@ async def create_session(body: CreateSessionRequest, request: Request) -> Create
                 break
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
+            # The worker records why init died (e.g. Vidu "CreditInsufficient").
+            # Surface it instead of making the caller wait for the generic timeout.
+            if runner is None and int(elapsed / poll_interval) % 40 == 0:
+                record = await session_service.get_session(r, sid)
+                if record and record.get("state") == "error":
+                    raise HTTPException(
+                        status_code=502,
+                        detail=_describe_init_failure(record.get("error") or ""),
+                    )
         else:
+            record = await session_service.get_session(r, sid)
             raise HTTPException(
                 status_code=503,
-                detail="Session worker did not become ready in time.",
+                detail=_describe_init_failure((record or {}).get("error") or "")
+                if (record or {}).get("error")
+                else "Session worker did not become ready in time.",
             )
     elif uses_flashtalk_slot:
         qs = await get_flashtalk_queue_status(r)
@@ -1598,6 +1630,22 @@ async def flashtalk_offline_bundle_download(
     if not path.is_file():
         raise HTTPException(status_code=404, detail="artifact file missing")
     return FileResponse(path, media_type=media_type, filename=filename)
+
+
+@router.post("/{session_id}/close")
+async def close_session(session_id: str, request: Request) -> dict[str, str]:
+    """Close a session; same effect as DELETE.
+
+    Exists so a closing browser tab can hang up with ``navigator.sendBeacon``,
+    which can only issue POST requests. Cloud-rendered avatars (Vidu) bill per
+    rendered second, so the teardown must not wait for the WebRTC ICE timeout.
+    """
+    r: redis.Redis = request.app.state.redis
+    s = await session_service.get_session(r, session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="session not found")
+    await session_service.close_session(r, session_id)
+    return {"session_id": session_id, "status": "closed"}
 
 
 @router.delete("/{session_id}")

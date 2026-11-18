@@ -89,7 +89,16 @@ def get_webrtc_ice_transport_policy() -> str:
 
 
 def get_webrtc_ice_servers() -> list[RTCIceServer]:
-    """Return ICE servers exposed to browser clients."""
+    """Return ICE servers exposed to browser clients.
+
+    No STUN server is configured by default on purpose: the browser and the
+    worker normally sit on the same (intranet) network, where host candidates
+    already connect in well under a second. Pointing at a public STUN that the
+    deployment cannot reach (the old default was ``stun.l.google.com``) makes
+    ICE gathering stall until every request times out, which measured ~15s of
+    "启动中" before the first frame. Set ``OPENTALKING_WEBRTC_STUN_URLS`` when a
+    real STUN is reachable.
+    """
     raw_config = os.environ.get("OPENTALKING_WEBRTC_ICE_SERVERS", "").strip()
     servers = _parse_ice_servers(raw_config, config_name="OPENTALKING_WEBRTC_ICE_SERVERS")
 
@@ -97,7 +106,6 @@ def get_webrtc_ice_servers() -> list[RTCIceServer]:
         stun_urls = _split_ice_urls(
             os.environ.get("OPENTALKING_WEBRTC_STUN_URLS", "")
             or os.environ.get("OPENTALKING_WEBRTC_STUN_URL", "")
-            or "stun:stun.l.google.com:19302"
         )
         servers.extend(RTCIceServer(urls=url) for url in stun_urls)
 

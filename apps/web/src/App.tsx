@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AvatarSelectionStage, type AgentConfig } from "./components/AvatarSelectionStage";
+import { reportClientDiag } from "./lib/clientDiag";
 import { BailianVoiceClone } from "./components/BailianVoiceClone";
 import { ChatInput } from "./components/ChatInput";
 import { ChatMessages } from "./components/ChatMessages";
@@ -77,6 +78,7 @@ import {
   LOCAL_INDEXTTS_MODEL_OPTIONS,
   LOCAL_TTS_VOICE_OPTIONS,
   SAMBERT_MODEL_OPTIONS,
+  TOKENPLAN_VOICE_OPTIONS,
   XIAOMI_MIMO_MODEL_OPTIONS,
   XIAOMI_MIMO_VOICE_OPTIONS,
   type TtsProviderExtended,
@@ -129,6 +131,9 @@ function bailianVoiceOptions(provider: TtsProviderExtended): { id: string; label
       return QWEN_TTS_VOICE_OPTIONS;
     case "cosyvoice":
       return COSYVOICE_VOICE_OPTIONS;
+    case "openai_compatible":
+      // DashScope-protocol gateways (百炼 TokenPlan) accept the TokenPlan voices.
+      return TOKENPLAN_VOICE_OPTIONS;
     case "sambert":
       return [];
     case "local_cosyvoice":
@@ -331,7 +336,7 @@ function ttsProviderNeedsApiKey(provider: TtsProviderExtended): boolean {
 }
 
 function hasSelectableTtsVoice(provider: TtsProviderExtended): boolean {
-  return !isEdgeTts(provider) && provider !== "sambert" && provider !== "openai_compatible";
+  return !isEdgeTts(provider) && provider !== "sambert";
 }
 
 function ttsModelSelectable(provider: TtsProviderExtended): boolean {
@@ -346,6 +351,17 @@ function resolveSelectableTtsVoice(
   if (!hasSelectableTtsVoice(provider)) return "";
   const trimmed = voice.trim();
   if (trimmed && options.some((option) => option.id === trimmed)) return trimmed;
+  return defaultTtsVoiceFor(provider, options);
+}
+
+/** 服务端默认音色：百炼 TokenPlan 网关（openai_compatible）用龙安灵心。 */
+const DEFAULT_TOKENPLAN_TTS_VOICE_ID = "longanlingxin";
+
+function defaultTtsVoiceFor(provider: TtsProviderExtended, options: VoiceOpt[]): string {
+  if (provider === "openai_compatible") {
+    const preferred = options.find((option) => option.id === DEFAULT_TOKENPLAN_TTS_VOICE_ID);
+    if (preferred) return preferred.id;
+  }
   return options[0]?.id ?? "";
 }
 
@@ -716,14 +732,24 @@ function pickInitialAvatar(
 ): AvatarSummary | null {
   if (!avatars.length) return null;
   const available = new Set(registeredModels);
-  if (defaultModel) {
-    const recommended = pickInitialAvatarForModel(avatars, defaultModel, storedSelection ?? null);
-    if (recommended?.client_renderer?.recommended_for.includes(defaultModel)) return recommended;
-  }
-  const customAvatar = pickInitialCustomAvatar(avatars, available);
   const storedAvatar = storedSelection?.id
     ? avatars.find((avatar) => avatar.id === storedSelection.id)
     : null;
+  if (defaultModel) {
+    // 用户显式选过的形象永远优先。
+    if (storedAvatar && storedSelection?.source === "explicit") return storedAvatar;
+    // 服务端默认模型优先：不要被自带 light2d 渲染器的形象（会把模型锁成 mock）劫持。
+    if (available.has(defaultModel)) {
+      const recommended = pickInitialAvatarForModel(avatars, defaultModel, null);
+      if (recommended?.client_renderer?.recommended_for.includes(defaultModel)) return recommended;
+      if (recommended && recommended.client_renderer?.type !== "light2d") return recommended;
+      const bundled = avatars.find(
+        (avatar) => !avatar.is_custom && !avatar.client_renderer,
+      );
+      if (bundled) return bundled;
+    }
+  }
+  const customAvatar = pickInitialCustomAvatar(avatars, available);
   if (
     storedAvatar &&
     (storedSelection?.source === "explicit" || storedAvatar.is_custom || !customAvatar)
@@ -886,6 +912,28 @@ export default function App() {
   const realtimeRecordMicStreamRef = useRef<MediaStream | null>(null);
   const pendingRealtimeExportRef = useRef<PendingRealtimeExport | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  // Cloud-rendered avatars (Vidu) bill per rendered second, so hang up the
+  // moment the tab goes away instead of waiting for the WebRTC ICE timeout.
+  useEffect(() => {
+    const closeOnLeave = (event: PageTransitionEvent) => {
+      if (event.persisted) return; // bfcache: the page may come back
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+      sessionIdRef.current = null;
+      const url = buildApiUrl(`/sessions/${sid}/close`);
+      try {
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(url, new Blob([""], { type: "text/plain" }));
+          return;
+        }
+      } catch {
+        // fall through to fetch
+      }
+      void fetch(url, { method: "POST", keepalive: true }).catch(() => undefined);
+    };
+    window.addEventListener("pagehide", closeOnLeave);
+    return () => window.removeEventListener("pagehide", closeOnLeave);
+  }, []);
   const knowledgeSyncChainRef = useRef<Promise<void>>(Promise.resolve());
   const speakAudioAbortRef = useRef<AbortController | null>(null);
   const ttsPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -936,6 +984,122 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionStatus>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  // The vidu overlay paints above the WebRTC stage, so it must stay transparent
+  // until it actually has a decoded frame — otherwise a slow/failed cloud join
+  // covers the stage with black and the user sees nothing at all.
+  const [viduFrameReady, setViduFrameReady] = useState(false);
+  /** True when the cloud overlay stopped receiving frames (live ended / frozen). */
+  const [viduStalled, setViduStalled] = useState(false);
+  // Vendor audio is the only copy that is frame-exact with the rendered mouth.
+  // If that track never materialises we fall back to the local TTS sink instead
+  // of leaving the session silent.
+  const [vendorAudioFallback, setVendorAudioFallback] = useState(false);
+  useEffect(() => {
+    if (model !== "vidu" || viduUsesLocalAudio() || connection !== "live") {
+      setVendorAudioFallback(false);
+      return;
+    }
+    let ready = false;
+    const onState = (event: Event) => {
+      const detail = (event as CustomEvent<{ ready?: boolean }>).detail;
+      if (detail?.ready) {
+        ready = true;
+        setVendorAudioFallback(false);
+      }
+    };
+    window.addEventListener("vidu-audio-state", onState);
+    const timer = setTimeout(() => {
+      if (!ready) {
+        console.warn("Vidu vendor audio never arrived; falling back to local TTS audio");
+        setVendorAudioFallback(true);
+      }
+    }, 8_000);
+    return () => {
+      window.removeEventListener("vidu-audio-state", onState);
+      clearTimeout(timer);
+    };
+  }, [model, connection]);
+  // Warm the vendor RTC bundle while the user is still picking a model / avatar:
+  // it is a ~1.2 MB chunk and fetching it at join time delays the first frame.
+  useEffect(() => {
+    if (model !== "vidu") return;
+    void import("trtc-sdk-v5").catch(() => undefined);
+  }, [model]);
+  /** `?diag=1` renders a live picture-health pill for field diagnostics. */
+  const diagEnabled = useMemo(() => {
+    try {
+      return new URLSearchParams(window.location.search).has("diag");
+    } catch {
+      return false;
+    }
+  }, []);
+  const [diagInfo, setDiagInfo] = useState<string>("");
+
+  useEffect(() => {
+    if (!diagEnabled) return;
+    let lastFrames = -1;
+    let lastAt = Date.now();
+    let fps = 0;
+    const timer = setInterval(() => {
+      const el = viduVideoRef.current;
+      const dbg = (window as unknown as { __viduRtc?: { remoteUsers?: () => { uid: string; camera?: boolean }[] } }).__viduRtc;
+      if (!el) {
+        setDiagInfo("video el: none");
+        return;
+      }
+      const quality = el.getVideoPlaybackQuality ? el.getVideoPlaybackQuality() : undefined;
+      const frames = quality ? quality.totalVideoFrames : -1;
+      const now = Date.now();
+      if (frames >= 0 && frames !== lastFrames) {
+        const dt = (now - lastAt) / 1000;
+        if (lastFrames >= 0 && dt > 0) fps = Math.round(((frames - lastFrames) / dt) * 10) / 10;
+        lastFrames = frames;
+        lastAt = now;
+      }
+      const remote = dbg?.remoteUsers?.() ?? [];
+      const opacity = getComputedStyle(el).opacity;
+      setDiagInfo(
+        `w=${el.videoWidth}x${el.videoHeight} rs=${el.readyState} frames=${frames} fps=${fps} ` +
+          `op=${opacity} muted=${el.muted ? 1 : 0} stream=${el.srcObject ? "y" : "n"} ` +
+          `stalled=${viduStalled ? "y" : "n"} remote=${remote.length}${remote.length ? "(cam=" + (remote[0].camera ? 1 : 0) + ")" : ""}`
+      );
+    }, 700);
+    return () => clearInterval(timer);
+  }, [diagEnabled, viduStalled]);
+
+  // Heartbeat: while the vidu overlay is in use, ship the picture-health numbers
+  // to the server every few seconds so a client-side black/frozen stage can be
+  // diagnosed from the backend log alone.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      // vidu renders in the vendor overlay; every other model streams through
+      // our own aiortc stage, so sample whichever element is actually playing.
+      const el = model === "vidu" ? viduVideoRef.current : videoRef.current;
+      if (!el) return;
+      const quality = el.getVideoPlaybackQuality ? el.getVideoPlaybackQuality() : undefined;
+      const dbg = (window as unknown as { __viduRtc?: { remoteUsers?: () => { uid: string; camera?: boolean }[] } }).__viduRtc;
+      reportClientDiag("vidu.heartbeat", {
+        model,
+        connection,
+        w: el.videoWidth,
+        h: el.videoHeight,
+        readyState: el.readyState,
+        frames: quality ? quality.totalVideoFrames : -1,
+        dropped: quality ? quality.droppedVideoFrames : -1,
+        opacity: getComputedStyle(el).opacity,
+        muted: el.muted,
+        hasStream: Boolean(el.srcObject),
+        tracks: (el.srcObject as MediaStream | null)?.getVideoTracks ? (el.srcObject as MediaStream).getVideoTracks().length : 0,
+        stalled: viduStalled,
+        frameReady: viduFrameReady,
+        stage: model === "vidu" ? "vidu-overlay" : "aiortc-stage",
+        remotes: dbg?.remoteUsers?.() ?? [],
+        attach: (window as unknown as { __viduRtc?: { state?: () => Record<string, unknown> } }).__viduRtc?.state?.() ?? null,
+        rtcStats: (window as unknown as { __viduRtc?: { stats?: () => unknown } }).__viduRtc?.stats?.() ?? null,
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [model, connection, viduStalled, viduFrameReady]);
   const [queueInfo, setQueueInfo] = useState<QueueInfo | null>(null);
   const [expiringCountdown, setExpiringCountdown] = useState<number | null>(null);
 
@@ -1787,15 +1951,37 @@ export default function App() {
     }
     audio.srcObject = remoteStream;
     // For vidu the cloud renderer publishes its own lip-synced audio track,
-    // which the overlay <video> plays. Keeping this sink unmuted as well would
-    // play the reply twice (and the local copy leads the rendered mouth).
-    const viduOwnsAudio = model === "vidu" && !viduUsesLocalAudio();
+    // but that copy runs through the vendor SDK's audio pipeline, which the
+    // browser autoplay policy can block without any way for us to retry — the
+    // session then renders picture-only and stays silent. Unless the deployment
+    // opts into `VITE_VIDU_AUDIO_SOURCE=vidu`, the reply audio is the same TTS
+    // track we already push to Vidu, so play it locally through <audio>.
+    const viduOwnsAudio = model === "vidu" && !viduUsesLocalAudio() && !vendorAudioFallback;
     audio.muted = viduOwnsAudio;
     audio.volume = viduOwnsAudio ? 0 : 1;
+    const retryOnGesture = () => {
+      const resume = () => {
+        window.removeEventListener("pointerdown", resume, true);
+        window.removeEventListener("keydown", resume, true);
+        void audio.play().catch(() => {});
+      };
+      window.addEventListener("pointerdown", resume, true);
+      window.addEventListener("keydown", resume, true);
+      return resume;
+    };
+    let resume: (() => void) | null = null;
     if (!viduOwnsAudio) {
-      void audio.play().catch(() => {});
+      // Needs sticky user activation; if the first attempt is refused, retry on
+      // the next gesture instead of staying silent for the whole session.
+      void audio.play().catch(() => {
+        resume = retryOnGesture();
+      });
     }
     return () => {
+      if (resume) {
+        window.removeEventListener("pointerdown", resume, true);
+        window.removeEventListener("keydown", resume, true);
+      }
       audio.srcObject = null;
     };
   }, [remoteStream, model]);
@@ -1922,6 +2108,8 @@ export default function App() {
       setActiveAsrProvider("");
       setQueueInfo(null);
       setExpiringCountdown(null);
+      setViduFrameReady(false);
+      setViduStalled(false);
       slotAcquiredRef.current = null;
       clearSubtitleState();
       if (clearMessages) {
@@ -2316,6 +2504,47 @@ export default function App() {
         setQueueInfo(null);
       }
 
+      // Vidu renders the avatar in the cloud and pushes it over RTC. Kick the
+      // cloud-channel join off before the local WebRTC handshake instead of
+      // after it: the join only needs the session id, and serialising the two
+      // left the stage black for ~10 extra seconds.
+      setViduFrameReady(false);
+      setViduStalled(false);
+      // Resolves when the cloud avatar has actually painted its first frame.
+      // The session must not be "started" before that: audio (TTS / mic) is what
+      // makes sound, and starting it while the picture is still warming up is
+      // exactly how you get "voice first, image later".
+      let resolveViduFrame: (() => void) | null = null;
+      const viduFrameGate = new Promise<void>((resolve) => {
+        resolveViduFrame = resolve;
+      });
+      const viduEl = model === "vidu" ? viduVideoRef.current : null;
+      if (model === "vidu" && !viduEl) {
+        notify("Vidu 画面容器未就绪，未能加入云端画面频道。请刷新页面重试。", "error");
+      }
+      const viduJoin: Promise<ViduRtcHandle | null> = viduEl
+        ? startViduPlayback(created.session_id, viduEl, {
+            onFirstFrame: () => {
+              setViduFrameReady(true);
+              resolveViduFrame?.();
+            },
+            onStall: (stalled: boolean) => setViduStalled(stalled),
+          }).catch((error: unknown) => {
+            reportClientDiag("vidu.join_failed", {
+              message: error instanceof Error ? error.message : String(error),
+              unavailable: error instanceof ViduRtcUnavailableError,
+              sessionId: created.session_id,
+            });
+            if (error instanceof ViduRtcUnavailableError) {
+              notify(error.message, "error");
+            } else {
+              console.warn("Failed to start Vidu RTC playback", error);
+              notify("语音链路已连接，但云端数字人画面未能加入 RTC 频道，请查看控制台日志。", "error");
+            }
+            return null;
+          })
+        : Promise.resolve(null);
+
       closePeerConnection();
       const playback = await startPlayback(created.session_id, videoRef.current!, {
         onRemoteStream: (remoteStream) => {
@@ -2330,26 +2559,21 @@ export default function App() {
       // Keep the stage video silent: <audio ref={audioRef}> is the single
       // audio sink, otherwise the same track plays twice.
       videoRef.current!.muted = true;
-      if (model === "vidu") {
-        // Vidu renders the avatar in the cloud and pushes it over RTC; the
-        // local WebRTC track above carries our TTS audio.
-        const viduEl = viduVideoRef.current;
-        if (!viduEl) {
-          notify("Vidu 画面容器未就绪，未能加入云端画面频道。请刷新页面重试。", "error");
-        } else {
-          try {
-            viduRtcRef.current = await startViduPlayback(created.session_id, viduEl);
-          } catch (error) {
-            if (error instanceof ViduRtcUnavailableError) {
-              notify(error.message, "error");
-            } else {
-              console.warn("Failed to start Vidu RTC playback", error);
-              notify("语音链路已连接，但云端数字人画面未能加入 RTC 频道，请查看控制台日志。", "error");
-            }
-          }
+      viduRtcRef.current = await viduJoin;
+      setConnection("live");
+      if (viduEl) {
+        // Give the cloud avatar a bounded head start (it needs a few seconds to
+        // render and publish). Past the budget we go ahead anyway and let the
+        // stall banner explain the problem instead of blocking the user.
+        const frameWaitMs = 12_000;
+        const painted = await Promise.race([
+          viduFrameGate.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), frameWaitMs)),
+        ]);
+        if (!painted) {
+          console.warn("Vidu overlay had no frame within " + frameWaitMs + "ms; starting anyway");
         }
       }
-      setConnection("live");
       await apiPost(`/sessions/${created.session_id}/start`, {});
       notify("会话已连接，可以开始文本、语音或音频驱动。", "success");
     } catch (error) {
@@ -3307,11 +3531,27 @@ export default function App() {
               {model === "vidu" ? (
                 <video
                   ref={viduVideoRef}
-                  className="pointer-events-none absolute inset-0 z-20 h-full w-full bg-black object-contain"
+                  className={`pointer-events-none absolute inset-0 z-20 h-full w-full object-contain transition-opacity duration-500 ${
+                    viduFrameReady ? "opacity-100" : "opacity-0"
+                  }`}
                   autoPlay
                   playsInline
+                  muted
                   aria-label="Vidu 云端数字人画面"
                 />
+              ) : null}
+
+              {diagEnabled ? (
+                <div className="pointer-events-none absolute left-2 top-2 z-40 max-w-[92%] rounded-md bg-black/75 px-2 py-1 font-mono text-[10px] leading-tight text-emerald-300 shadow-lg">
+                  {diagInfo || "diag: waiting"}
+                </div>
+              ) : null}
+              {model === "vidu" && viduStalled ? (
+                <div className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex justify-center">
+                  <div className="rounded-full border border-amber-300/40 bg-amber-950/80 px-4 py-2 text-xs font-semibold text-amber-100 shadow-lg backdrop-blur">
+                    云端画面已停止（会话可能已结束），请点「结束对话」后重新开始
+                  </div>
+                </div>
               ) : null}
 
               {showStart ? (

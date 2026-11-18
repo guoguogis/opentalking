@@ -75,6 +75,11 @@ def _supports_kwarg(func: Any, name: str) -> bool:
     )
 
 
+def _scope_filters(profile_id: str, character_id: str) -> dict[str, str]:
+    """Entity scope in the shape mem0 >= 2.x expects."""
+    return {"user_id": profile_id, "agent_id": character_id}
+
+
 def _count_add_entry(entry: Any) -> int:
     if not isinstance(entry, dict):
         return 1 if entry else 0
@@ -273,17 +278,37 @@ class Mem0MemoryProvider(MemoryProvider):
         search = getattr(self._client, "search", None)
         if not callable(search):
             return []
+        top_k = max(0, int(limit))
         kwargs = {
             "user_id": profile_id,
             "agent_id": character_id,
-            "limit": max(0, int(limit)),
+            "limit": top_k,
         }
-        try:
-            with _suppress_mem0_raw_logs():
-                raw = await _maybe_await(search(query, **kwargs))
-        except TypeError:
-            with _suppress_mem0_raw_logs():
-                raw = await _maybe_await(search(query=query, **kwargs))
+        scope = _scope_filters(profile_id, character_id)
+        # mem0 >= 2.x drops top-level entity kwargs (scope moved into
+        # ``filters``) and renamed ``limit`` to ``top_k``; try both shapes so
+        # either client version works.
+        attempts = (
+            lambda: search(query, **kwargs),
+            lambda: search(query=query, **kwargs),
+            lambda: search(query, top_k=top_k, filters=scope),
+            lambda: search(query=query, top_k=top_k, filters=scope),
+        )
+        raw: Any = None
+        last_error: Exception | None = None
+        for attempt in attempts:
+            try:
+                with _suppress_mem0_raw_logs():
+                    raw = await _maybe_await(attempt())
+                last_error = None
+                break
+            except (TypeError, ValueError) as exc:
+                last_error = exc
+                raw = None
+        if raw is None:
+            if last_error is not None:
+                log.warning("mem0 search call unsupported by installed client: %s", last_error)
+            return []
         items = self._normalize_raw_items(raw)
         return [
             item
@@ -291,7 +316,7 @@ class Mem0MemoryProvider(MemoryProvider):
             if item.metadata.get("library_id") == library_id
             and item.metadata.get("profile_id", profile_id) == profile_id
             and item.metadata.get("character_id", character_id) == character_id
-        ][: max(0, int(limit))]
+        ][:top_k]
 
     async def add_conversation_turns(
         self,
@@ -479,12 +504,30 @@ class Mem0MemoryProvider(MemoryProvider):
         get_all = getattr(self._client, "get_all", None)
         if not callable(get_all):
             return []
-        try:
-            with _suppress_mem0_raw_logs():
-                raw = await _maybe_await(get_all(user_id=profile_id, agent_id=character_id))
-        except TypeError:
-            with _suppress_mem0_raw_logs():
-                raw = await _maybe_await(get_all(user_id=profile_id))
+        scope = _scope_filters(profile_id, character_id)
+        # mem0 >= 2.x only accepts filters={...} here, older releases only
+        # accept the flat user_id/agent_id kwargs.
+        attempts = (
+            lambda: get_all(user_id=profile_id, agent_id=character_id),
+            lambda: get_all(user_id=profile_id),
+            lambda: get_all(filters=scope),
+            lambda: get_all(filters={"user_id": profile_id}),
+        )
+        raw: Any = None
+        last_error: Exception | None = None
+        for attempt in attempts:
+            try:
+                with _suppress_mem0_raw_logs():
+                    raw = await _maybe_await(attempt())
+                last_error = None
+                break
+            except (TypeError, ValueError) as exc:
+                last_error = exc
+                raw = None
+        if raw is None:
+            if last_error is not None:
+                log.warning("mem0 get_all unusable with installed client: %s", last_error)
+            return []
         return [
             item
             for item in self._normalize_raw_items(raw)
