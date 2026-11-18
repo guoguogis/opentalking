@@ -20,6 +20,10 @@ class VideoCreationJob:
     hub: ChunkHub
     status: str = "queued"
     result: dict[str, Any] | None = None
+    # Remote queue renderers (DUIX) report their own progress; local frame
+    # renderers leave this at 0 and rely on generated_duration_ms instead.
+    progress: float = 0.0
+    progress_stage: str = ""
     error_code: str | None = None
     error_detail: str | None = None
     generated_duration_ms: float = 0.0
@@ -42,6 +46,8 @@ class VideoCreationJob:
             "status": self.status,
             "source": self.source,
             "generated_duration_ms": round(float(self.generated_duration_ms), 3),
+            "progress": round(float(self.progress), 4),
+            "progress_stage": self.progress_stage,
             "buffer_duration_ms": 0.0,
             "first_media_at": self.first_media_at,
             "first_sequence": self.first_sequence,

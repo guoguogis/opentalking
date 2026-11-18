@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 
 from opentalking.avatar.fasterliveportrait_config import normalize_fasterliveportrait_runtime_config
+from opentalking.providers.offline.duix import DuixError
 from opentalking.providers.synthesis.availability import resolve_model_statuses
 from opentalking.providers.tts.indextts_config import normalize_indextts_config
 from opentalking.providers.tts.providers import normalize_tts_provider
@@ -51,6 +52,143 @@ async def _ensure_model_available(settings: Any, model: str) -> None:
         ),
     )
 _INDEXTTS_PROVIDERS = {"indextts", "local_indextts", "omnirt_indextts"}
+
+# DUIX is an offline task queue, not a streaming synthesis backend, so it is
+# deliberately absent from SYNTHESIS_PROVIDERS (the realtime model list).
+DUIX_MODEL = "duix"
+
+
+async def _duix_ready(settings: Any) -> tuple[bool, str]:
+    from opentalking.providers.offline.duix import DuixClient
+
+    client = DuixClient(settings)
+    if not client.configured:
+        return False, "DUIX 网关地址未配置（OPENTALKING_DUIX_BASE_URL）"
+    if not await client.probe():
+        return False, f"DUIX 网关不可达：{client.base_url}"
+    asset_base = str(getattr(settings, "duix_asset_base_url", "") or "").strip()
+    if not asset_base:
+        return False, "未配置 OPENTALKING_DUIX_ASSET_BASE_URL，DUIX 无法回源下载素材"
+    return True, ""
+
+
+async def _create_duix_job(
+    request: Request,
+    response: Response,
+    *,
+    avatar_id: str,
+    source: str,
+    title: str,
+    execution_mode: str,
+    audio_file: UploadFile | None,
+    text: str | None,
+    tts_provider: str | None,
+    tts_model: str | None,
+    voice: str | None,
+) -> Any:
+    """Submit one DUIX render (sync or through the job manager)."""
+    from opentalking.video_creation_duix import (
+        DuixVideoCreationService,
+        resolve_avatar_dir,
+        resolve_driving_video,
+    )
+
+    settings = request.app.state.settings
+    ready, reason = await _duix_ready(settings)
+    if not ready:
+        raise HTTPException(status_code=400, detail=reason)
+    if source not in {"upload", "tts_text"}:
+        raise HTTPException(
+            status_code=400,
+            detail="DUIX 离线生成仅支持 audio_source=upload 或 tts_text",
+        )
+
+    service = DuixVideoCreationService(settings)
+    # Fail fast (before any remote work) when the avatar has no driving clip.
+    try:
+        resolve_driving_video(resolve_avatar_dir(settings, avatar_id))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    upload_path: Path | None = None
+    if source == "upload":
+        if audio_file is None:
+            raise HTTPException(status_code=400, detail="audio_file is required")
+        body = await audio_file.read()
+        max_bytes = _audio_max_bytes(settings)
+        if len(body) > max_bytes:
+            raise HTTPException(status_code=413, detail=f"audio too large (max {max_bytes} bytes)")
+        if not body:
+            raise HTTPException(status_code=400, detail="empty audio")
+        suffix = Path(audio_file.filename or "speech.wav").suffix or ".wav"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(body)
+            upload_path = Path(tmp.name)
+
+    pcm = None
+    if source == "tts_text":
+        if not (text or "").strip():
+            raise HTTPException(status_code=400, detail="text is required")
+        pcm = await VideoCreationService(settings)._synthesize_tts_pcm(  # noqa: SLF001
+            text=text or "",
+            voice=voice,
+            tts_provider=tts_provider,
+            tts_model=tts_model,
+        )
+
+    async def run(on_progress: Any) -> dict[str, Any]:
+        try:
+            if source == "upload":
+                assert upload_path is not None
+                return await service.create_from_audio_file(
+                    avatar_id=avatar_id,
+                    upload_path=upload_path,
+                    title=title,
+                    on_progress=on_progress,
+                )
+            assert pcm is not None
+            return await service.create_from_pcm(
+                avatar_id=avatar_id,
+                pcm=pcm,
+                title=title,
+                on_progress=on_progress,
+            )
+        finally:
+            if upload_path is not None:
+                upload_path.unlink(missing_ok=True)
+
+    if execution_mode == "async":
+        manager = _video_job_manager(request)
+
+        async def runner(sink: Any) -> dict[str, Any]:
+            import time as _time
+
+            async def progress(value: float, stage: str) -> None:
+                sink.job.progress = float(value)
+                sink.job.progress_stage = stage
+                sink.job.updated_at = _time.time()
+
+            return await run(progress)
+
+        job = await manager.submit(
+            source=DUIX_MODEL,
+            metadata={"model": DUIX_MODEL, "avatar_id": avatar_id},
+            runner=runner,
+        )
+        response.status_code = 202
+        return job.public()
+
+    try:
+        return _with_download_url(await run(None))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except DuixError as exc:
+        raise HTTPException(status_code=502, detail=f"DUIX 渲染失败：{exc}") from exc
+
 
 
 def _video_job_manager(request: Request) -> VideoCreationJobManager:
@@ -176,6 +314,23 @@ async def create_video_creation_job(
         raise HTTPException(status_code=400, detail="audio_source must be upload, tts_text, voice_clone, duo_dialog, or reference_video")
     settings = request.app.state.settings
     await _ensure_model_available(settings, model)
+    if model.strip().lower() == DUIX_MODEL:
+        mode_raw = execution_mode.strip().lower()
+        if mode_raw not in {"sync", "async"}:
+            raise HTTPException(status_code=400, detail="execution_mode must be sync or async")
+        return await _create_duix_job(
+            request,
+            response,
+            avatar_id=avatar_id,
+            source=source,
+            title=title,
+            execution_mode=mode_raw,
+            audio_file=audio_file,
+            text=text,
+            tts_provider=tts_provider,
+            tts_model=tts_model,
+            voice=voice,
+        )
     flp_config = _parse_fasterliveportrait_config(model, fasterliveportrait_config)
     video_composition_config = _parse_video_composition_config(composition_config)
     try:

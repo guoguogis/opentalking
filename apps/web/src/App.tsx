@@ -952,6 +952,9 @@ export default function App() {
   const [avatars, setAvatars] = useState<AvatarSummary[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [modelStatuses, setModelStatuses] = useState<ModelStatus[]>([]);
+  // Offline renderers (DUIX) are task-queue jobs, not streaming models: keep
+  // them out of the realtime picker but expose them to the video workspace.
+  const [offlineModelStatuses, setOfflineModelStatuses] = useState<ModelStatus[]>([]);
   const [avatarId, setAvatarId] = useState(() => readStoredAvatarId() ?? "singer");
   const [model, setModel] = useState("flashtalk");
   const [selectedPersonaId, setSelectedPersonaId] = useState<string>(() => {
@@ -1222,6 +1225,21 @@ export default function App() {
         .filter((status) => modelConnectionBadge(status, models.includes(status.id)).connected)
         .map((status) => status.id),
     [modelStatuses, models],
+  );
+  // Video creation sees the realtime models *plus* the offline task-queue
+  // renderers (DUIX), which never appear in the realtime picker.
+  const videoCreationModelStatuses = useMemo(
+    () => [...modelStatuses, ...offlineModelStatuses],
+    [modelStatuses, offlineModelStatuses],
+  );
+  const videoCreationConnectedModels = useMemo(
+    () => [
+      ...connectedModelIds,
+      ...offlineModelStatuses
+        .filter((status) => modelConnectionBadge(status, true).connected)
+        .map((status) => status.id),
+    ],
+    [connectedModelIds, offlineModelStatuses],
   );
   const [asrProvider, setAsrProvider] = useState(() => {
     try {
@@ -2196,7 +2214,7 @@ export default function App() {
       try {
         const [av, mo, health, , initialRuntimeConfig] = await Promise.all([
           apiGet<AvatarSummary[]>("/avatars"),
-          apiGet<{ models: string[]; statuses?: ModelStatus[]; default_model?: string | null }>("/models"),
+          apiGet<{ models: string[]; statuses?: ModelStatus[]; default_model?: string | null; offline_models?: string[]; offline_statuses?: ModelStatus[] }>("/models"),
           apiGet<HealthResponse>("/health"),
           loadVoices(),
           loadRuntimeConfig().catch((error) => {
@@ -2219,6 +2237,7 @@ export default function App() {
         }
         const statuses = mo.statuses ?? mo.models.map((id) => ({ id, connected: true }));
         setModelStatuses(statuses);
+        setOfflineModelStatuses(mo.offline_statuses ?? []);
         const storedAvatarSelection = readStoredAvatarSelection();
         const initialAvatar = pickInitialAvatar(av, mo.models, storedAvatarSelection, mo.default_model);
         if (initialAvatar) {
@@ -3267,8 +3286,8 @@ export default function App() {
             sceneCompositions={sceneCompositions}
             selectedSceneIdsByAvatar={selectedSceneIdsByAvatar}
             models={models}
-            connectedModels={connectedModelIds}
-              modelStatuses={modelStatuses}
+            connectedModels={videoCreationConnectedModels}
+            modelStatuses={videoCreationModelStatuses}
             onAvatarChange={handleAvatarChange}
             onAvatarUploaded={handleVideoCloneAvatarUploaded}
             onVoiceCloned={applyClonedVoice}
