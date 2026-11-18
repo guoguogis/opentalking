@@ -114,7 +114,61 @@ TypeError: FlashHeadWSClient.init_session() got an unexpected keyword argument '
 
 首帧时间包含网关侧模型冷启动；同一模型第二次连接明显更快。
 
-## 5. 日常运维
+## 5. FlashHead 按会话指定分辨率
+
+FlashHead 的 VAE 步长是 `vae_stride=[8, 32, 32]`，只要宽高是 **32 的倍数**就能原生生成，
+不再固定 512×512。`session.create` 的 `config` 新增三个可选字段：
+
+```json
+{"type":"session.create",
+ "inputs":{"image_b64":"..."},
+ "config":{"seed":9999,"width":640,"height":640,"fit":"native"}}
+```
+
+- `fit="native"`：按目标分辨率直接生成，宽高必须是 32 的倍数
+- `fit="resize"`：先按 512×512 生成再缩放到目标尺寸，任意宽高可用，但不会增加细节
+- 范围 64–2048；`session.created.video` 会回显 `width/height`、`render_width/render_height`、`fit`
+
+### 应用侧策略（`opentalking/providers/synthesis/flashhead/ws_client.py`）
+
+分辨率取值优先级：显式参数 → `OPENTALKING_FLASHHEAD_WIDTH/HEIGHT/FIT` → 形象自身分辨率
+（`manifest.json` 的 `width/height`，由 `synthesis_runner._flashhead_render_config()` 传入）
+→ settings 默认 → 512×512。
+
+`fit` 默认 `auto`：**两边都是 32 的倍数就用 native，否则用 resize**；若显式要求 `native`
+但尺寸不合规，会打 warning 并回落到 resize（避免会话直接失败）。只有在需要 `resize` 或显式指定
+`fit` 时才会把 `fit` 字段发给服务端，保证与旧版 FlashHead 兼容。
+
+```ini
+# 想让所有 FlashHead 会话都用固定尺寸时（覆盖形象自身分辨率）
+OPENTALKING_FLASHHEAD_WIDTH=640
+OPENTALKING_FLASHHEAD_HEIGHT=640
+OPENTALKING_FLASHHEAD_FIT=native
+```
+
+### 实测（网关 + 应用内）
+
+客户端级（`/tmp/test_flashhead_size.py`，真实解码首帧尺寸为准）：
+
+| 请求 | fit 解析 | 回显 render | 首帧解码尺寸 | 结果 |
+| --- | --- | --- | --- | --- |
+| 512×512（默认） | native | 512×512 | 512×512 | 通过 |
+| 704×1248（形象原生） | native | 704×1248 | 704×1248 | 通过 |
+| 720×1280（720 非 32 倍数） | resize | 512×512 | 720×1280 | 通过 |
+| 显式 640×640 | native | 640×640 | 640×640 | 通过 |
+| 720×1280 + 强制 native | 回落 resize（有 warning） | 512×512 | 720×1280 | 通过 |
+
+应用内端到端（浏览器里选形象 → 选 FlashHead → 说话）：
+
+| 形象 | 形象分辨率 | 日志 | 舞台分辨率 | 首帧 | 说话后 2s 新增帧 |
+| --- | --- | --- | --- | --- | --- |
+| MatesX01(动态) | 704×1248 | `fit=native render 704x1248` | 704×1248 | 5.9s | +50 |
+| 古风小生 | 720×1280 | `fit=resize render 512x512` | 720×1280 | 5.7s | +49 |
+
+注意 720 不是 32 的倍数，`1280×720` / `720×1280` 只能走 resize；要 native 请用
+1280×704 / 1280×736 这类尺寸。2048×2048 以上或低于 64 的边会被钳制。
+
+## 6. 日常运维
 
 ```bash
 # 改了 .env 之后
@@ -138,3 +192,7 @@ grep -aiE 'omnirt|flashhead|quicktalk|musetalk|flashtalk' /usr/local/opentalking
   `indextts-xiaoxiao-cn` 这类，不在本地 CosyVoice 音色表里，切过去要先解决音色校验。
 - **认证**：网关只认 `Authorization: Bearer sk-litellm-master-key-123`，TLS 证书签发给 IP，
   不能加 `-k` 之外的绕过假设；浏览器侧不直连网关，密钥不下发到前端。
+- **FlashHead 大尺寸代价**：1280×704 native 单块 1.32s（24 帧/块），已低于实时，只适合离线；
+  实时对话建议 ≤768×1280 且优先 32 的倍数走 native，非 32 倍数的竖屏走 resize（512 放大）。
+- **FlashHead 一会话两次建连**：应用会为预缓冲（首个语音块提前渲染）再起一个 WS 会话，
+  在单槽位串行的网关上是排队关系，若并发紧张可观察日志确认排队是否成为瓶颈。

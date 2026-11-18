@@ -679,6 +679,19 @@ class FlashTalkRunner:
     def _wav2lip_video_config(self) -> dict[str, int] | None:
         return self._manifest_video_config(model_type="wav2lip")
 
+    def _flashhead_render_config(self) -> dict[str, int] | None:
+        """Avatar resolution for FlashHead, which renders at any 32-multiple size.
+
+        Only width/height are forwarded: fps and chunk framing stay whatever the
+        server echoes back, so dropping the manifest fps here keeps the audio
+        chunking unchanged from the previous fixed-size behaviour.
+        """
+        config = self._manifest_video_config(model_type="flashhead")
+        if not config:
+            return None
+        size = {key: value for key, value in config.items() if key in {"width", "height"}}
+        return size or None
+
     def _quicktalk_video_config(self) -> dict[str, int] | None:
         config = self._manifest_video_config(model_type="quicktalk")
         if config is None:
@@ -1526,7 +1539,11 @@ class FlashTalkRunner:
         await self._init_flashtalk_session(ref_image_path)
 
     async def _init_flashtalk_session(self, ref_image_path: Path) -> None:
-        video_config = self._fasterliveportrait_video_config(ref_image_path) or self._wav2lip_video_config()
+        video_config = (
+            self._fasterliveportrait_video_config(ref_image_path)
+            or self._wav2lip_video_config()
+            or self._flashhead_render_config()
+        )
         await self.flashtalk.init_session(
             avatar_path=self.avatar_path(),
             ref_image=self._fasterliveportrait_ref_image_payload(ref_image_path, video_config),

@@ -73,6 +73,83 @@ def _decode_jpeg(jpeg_bytes: bytes) -> np.ndarray:
     return bgr
 
 
+# FlashHead's VAE (vae_stride=[8, 32, 32]) can render any width/height that is a
+# multiple of 32 natively; everything else has to be generated at 512x512 and
+# resized, which costs detail instead of gaining it.
+VAE_STRIDE = 32
+MIN_SIDE = 64
+MAX_SIDE = 2048
+DEFAULT_SIDE = 512
+_VALID_FITS = frozenset({"native", "resize"})
+
+
+def _clamp_side(value: Any, fallback: int) -> int:
+    try:
+        side = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if side <= 0:
+        return fallback
+    return max(MIN_SIDE, min(MAX_SIDE, side))
+
+
+def _normalize_fit(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in _VALID_FITS else ""
+
+
+def resolve_render_size(
+    *,
+    width: Any = None,
+    height: Any = None,
+    fit: Any = None,
+    video_config: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+) -> tuple[int, int, str, bool]:
+    """Resolve the render target for one FlashHead session.
+
+    Priority: explicit argument -> ``OPENTALKING_FLASHHEAD_*`` env -> per-avatar
+    ``video_config`` -> client config -> 512x512. ``fit`` stays "auto" unless a
+    caller asked for something specific; auto means native when both sides are a
+    multiple of 32, otherwise resize.
+    """
+    video_config = video_config or {}
+    config = config or {}
+
+    sources = [
+        (width, height),
+        (
+            os.environ.get("OPENTALKING_FLASHHEAD_WIDTH"),
+            os.environ.get("OPENTALKING_FLASHHEAD_HEIGHT"),
+        ),
+        (video_config.get("width"), video_config.get("height")),
+        (config.get("width"), config.get("height")),
+    ]
+    render_w = render_h = DEFAULT_SIDE
+    for raw_w, raw_h in sources:
+        render_w = _clamp_side(raw_w, DEFAULT_SIDE)
+        render_h = _clamp_side(raw_h, DEFAULT_SIDE)
+        if raw_w not in (None, "") or raw_h not in (None, ""):
+            break
+
+    requested_fit = _normalize_fit(fit) or _normalize_fit(
+        os.environ.get("OPENTALKING_FLASHHEAD_FIT")
+    ) or _normalize_fit(video_config.get("fit")) or _normalize_fit(config.get("fit"))
+    fit_explicit = bool(requested_fit)
+
+    native_ok = render_w % VAE_STRIDE == 0 and render_h % VAE_STRIDE == 0
+    effective_fit = requested_fit or ("native" if native_ok else "resize")
+    if effective_fit == "native" and not native_ok:
+        log.warning(
+            "FlashHead native fit needs both sides to be multiples of %d; %dx%d -> resize",
+            VAE_STRIDE,
+            render_w,
+            render_h,
+        )
+        effective_fit = "resize"
+    return render_w, render_h, effective_fit, fit_explicit
+
+
 class FlashHeadWSClient:
     """Async client for OmniRT's native FlashHead realtime avatar protocol."""
 
@@ -97,6 +174,11 @@ class FlashHeadWSClient:
         self.fps: int = 25
         self.height: int = 0
         self.width: int = 0
+        # What the server says it actually generated, plus the resize target when
+        # fit="resize" (render_* can be smaller than width/height).
+        self.render_width: int = 0
+        self.render_height: int = 0
+        self.fit: str = ""
         self.sample_rate: int = 16000
         self.audio_chunk_samples: int = 0
 
@@ -115,6 +197,11 @@ class FlashHeadWSClient:
         ref_image: bytes | str | Path,
         prompt: str = "A person is talking. Only the foreground characters are moving, the background remains static.",
         seed: int = 9999,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        fit: str | None = None,
+        video_config: dict[str, Any] | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
         """Create the FlashHead session.
@@ -124,6 +211,9 @@ class FlashHeadWSClient:
         keywords too. Accept and ignore them instead of raising TypeError, so
         switching the driving model to FlashHead does not fail during session
         setup.
+
+        The render size comes from ``width``/``height``/``fit`` when given, else
+        from ``video_config`` (the avatar's own resolution), else from settings.
         """
         if extra:
             log.debug(
@@ -138,7 +228,30 @@ class FlashHeadWSClient:
         else:
             ref_bytes = ref_image
 
-        config = {"seed": seed, **self._config}
+        render_w, render_h, effective_fit, fit_explicit = resolve_render_size(
+            width=width,
+            height=height,
+            fit=fit,
+            video_config=video_config,
+            config=self._config,
+        )
+        config = {
+            "seed": seed,
+            **self._config,
+            "width": render_w,
+            "height": render_h,
+        }
+        # Older FlashHead builds never saw a "fit" key, so only send it when it
+        # matters: an explicit request, or resize (which the server must be told).
+        if fit_explicit or effective_fit == "resize":
+            config["fit"] = effective_fit
+        log.info(
+            "FlashHead render target: %dx%d fit=%s (explicit=%s)",
+            render_w,
+            render_h,
+            effective_fit,
+            fit_explicit,
+        )
         msg = {
             "type": "session.create",
             "model": self._model,
@@ -162,16 +275,22 @@ class FlashHeadWSClient:
         self.sample_rate = int(audio.get("sample_rate") or self.sample_rate)
         self.audio_chunk_samples = int(audio.get("chunk_samples") or self.audio_chunk_samples or 0)
         self.fps = int(video.get("fps") or self.fps)
-        self.width = int(video.get("width") or self.width or 0)
-        self.height = int(video.get("height") or self.height or 0)
+        self.width = int(video.get("width") or render_w)
+        self.height = int(video.get("height") or render_h)
+        self.render_width = int(video.get("render_width") or self.width)
+        self.render_height = int(video.get("render_height") or self.height)
+        self.fit = str(video.get("fit") or effective_fit)
         self.slice_len = int(round(self.audio_chunk_samples * self.fps / max(1, self.sample_rate)))
         self.frame_num = int(video.get("frame_count") or self.slice_len)
         self.motion_frames_num = int(video.get("motion_frames_num") or max(0, self.frame_num - self.slice_len))
         log.info(
-            "FlashHead session init OK: session=%s %dx%d fps=%d chunk_samples=%d",
+            "FlashHead session init OK: session=%s %dx%d (render %dx%d fit=%s) fps=%d chunk_samples=%d",
             self._session_id,
             self.width,
             self.height,
+            self.render_width,
+            self.render_height,
+            self.fit,
             self.fps,
             self.audio_chunk_samples,
         )

@@ -347,6 +347,7 @@ def _legacy_env_mapping() -> dict[str, str]:
         "FLASHHEAD_SAMPLE_RATE": "flashhead_sample_rate",
         "FLASHHEAD_WIDTH": "flashhead_width",
         "FLASHHEAD_HEIGHT": "flashhead_height",
+        "FLASHHEAD_FIT": "flashhead_fit",
         "FLASHHEAD_FRAME_NUM": "flashhead_frame_num",
         "FLASHHEAD_CHUNK_SAMPLES": "flashhead_chunk_samples",
         "OMNIRT_ENDPOINT": "omnirt_endpoint",
@@ -536,6 +537,8 @@ class Settings(BaseSettings):
     flashhead_sample_rate: int = 16000
     flashhead_width: int = 512
     flashhead_height: int = 512
+    # "auto" picks native when both sides are a multiple of 32, otherwise resize.
+    flashhead_fit: str = "auto"
     flashhead_frame_num: int = 29
     flashhead_chunk_samples: int = 17920
 
