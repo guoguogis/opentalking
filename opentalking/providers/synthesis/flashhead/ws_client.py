@@ -115,7 +115,21 @@ class FlashHeadWSClient:
         ref_image: bytes | str | Path,
         prompt: str = "A person is talking. Only the foreground characters are moving, the background remains static.",
         seed: int = 9999,
+        **extra: Any,
     ) -> dict[str, Any]:
+        """Create the FlashHead session.
+
+        FlashHead only consumes a reference image plus prompt/seed, but the shared
+        synthesis runner calls every client with the wav2lip/quicktalk tuning
+        keywords too. Accept and ignore them instead of raising TypeError, so
+        switching the driving model to FlashHead does not fail during session
+        setup.
+        """
+        if extra:
+            log.debug(
+                "FlashHead ignores irrelevant init options: %s",
+                ", ".join(sorted(extra)),
+            )
         if self._ws is None:
             await self.connect()
 

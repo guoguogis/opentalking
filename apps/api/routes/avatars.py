@@ -1320,6 +1320,16 @@ async def get_preview_video(avatar_id: str, request: Request) -> FileResponse:
     return FileResponse(path, media_type=_video_media_type(path))
 
 
+def _remote_cache_prep_enabled() -> bool:
+    """Opt back in to local asset prep for models that run on a remote backend."""
+    return os.environ.get("OPENTALKING_PREWARM_REMOTE_CACHE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 @router.post("/{avatar_id}/prewarm")
 async def prewarm_avatar(avatar_id: str, request: Request) -> dict[str, Any]:
     try:
@@ -1371,6 +1381,24 @@ async def prewarm_avatar(avatar_id: str, request: Request) -> dict[str, Any]:
             "runtime_status": runtime_status,
             "cache": cache_response,
             "runtime": runtime,
+        }
+
+    # A remote runtime (OmniRT gateway / Vidu) builds its own reference cache from the
+    # image it is given, so preparing one here would only drag torch into a host that
+    # deliberately has no ML stack - and its failure blocks the session start in the UI.
+    remote_backend = backend.backend in {"omnirt", "direct_ws", "vidu"}
+    if remote_backend and model in {"quicktalk", "wav2lip"} and not _remote_cache_prep_enabled():
+        detail = (
+            f"{model} runs on the {backend.backend} backend; the remote runtime builds its own "
+            "cache from ref_image, so no local asset preparation is required"
+        )
+        return {
+            "avatar_id": avatar_id,
+            "model": model,
+            "status": "ready",
+            "runtime_status": "skipped",
+            "cache": {"model": model, "status": "remote", "detail": detail},
+            "runtime": {"type": "preload_skipped", "reason": "remote_backend", "message": detail},
         }
 
     try:
