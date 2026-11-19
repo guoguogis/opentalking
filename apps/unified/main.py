@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apps.api.core.config import get_settings
 from apps.api.routes.avatars import _call_adapter_warmup
-from apps.api.routes import agent, avatars, client_diag, duix, events, exports, health, hls_proxy, memory, models, outputs, personas, rtmps_jobs, runtime_config, scene_assets, selftest, sessions, tts_preview, video_clone, video_creation, voices
+from apps.api.routes import agent, avatars, events, exports, health, hls_proxy, memory, models, outputs, personas, rtmps_jobs, runtime_config, scene_assets, sessions, tts_preview, video_clone, video_creation, voices, client_diag, selftest
 from opentalking.voice.store import init_voice_store
 from opentalking.core.in_memory_redis import InMemoryRedis
 from opentalking.pipeline.session.runner import SessionRunner
@@ -239,7 +239,6 @@ def create_app() -> FastAPI:
     app.include_router(personas.router)
     app.include_router(events.router)
     app.include_router(exports.router)
-    app.include_router(duix.router)
     app.include_router(scene_assets.router)
     app.include_router(runtime_config.router)
     app.include_router(tts_preview.router)

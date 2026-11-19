@@ -300,15 +300,6 @@ def _legacy_env_mapping() -> dict[str, str]:
         "VIDU_BASE_URL": "vidu_base_url",
         "VIDU_AVATAR_IMAGE_URI": "vidu_avatar_image_uri",
         "VIDU_RTC_PROVIDER": "vidu_rtc_provider",
-        "DUIX_BASE_URL": "duix_base_url",
-        "DUIX_API_KEY": "duix_api_key",
-        "DUIX_ASSET_BASE_URL": "duix_asset_base_url",
-        "DUIX_ASSET_DIR": "duix_asset_dir",
-        "DUIX_ASSET_TTL_SEC": "duix_asset_ttl_sec",
-        "DUIX_SUBMIT_TIMEOUT_SEC": "duix_submit_timeout_sec",
-        "DUIX_TASK_TIMEOUT_SEC": "duix_task_timeout_sec",
-        "DUIX_POLL_INTERVAL_SEC": "duix_poll_interval_sec",
-        "DUIX_BUSY_RETRY_SEC": "duix_busy_retry_sec",
         "FLASHTALK_WS_URL": "flashtalk_ws_url",
         "FLASHTALK_FRAME_NUM": "flashtalk_frame_num",
         "FLASHTALK_MOTION_FRAMES_NUM": "flashtalk_motion_frames_num",
@@ -490,22 +481,6 @@ class Settings(BaseSettings):
     vidu_height: int = 1280
     vidu_idle_timeout_seconds: int = 7200
     vidu_enable_recording: bool = False
-
-    # DUIX is an offline batch renderer (submit -> poll -> download), not a
-    # streaming model, so it is only reachable through the video-creation jobs.
-    # The base URL defaults to "<omnirt_endpoint>/duix" when left empty.
-    duix_base_url: str = ""
-    duix_api_key: str = ""
-    # Prefix the renderer uses to download its inputs. It has no internet
-    # egress, so this must point at an address inside its network (the internal
-    # interface of this host), e.g. http://10.25.31.93/opentalking/api
-    duix_asset_base_url: str = ""
-    duix_asset_dir: str = ""
-    duix_asset_ttl_sec: int = 3600
-    duix_submit_timeout_sec: float = 60.0
-    duix_task_timeout_sec: float = 1800.0
-    duix_poll_interval_sec: float = 2.0
-    duix_busy_retry_sec: float = 15.0
 
     flashtalk_ws_url: str = ""
     flashtalk_ckpt_dir: str = "./models/SoulX-FlashTalk-14B"
